@@ -8,7 +8,7 @@ import * as fs from 'fs';
 import * as path from 'path';
 import * as crypto from 'crypto';
 import { fileURLToPath } from 'url';
-import { Agent, MemoryBlock } from './conversation_utils.js';
+import { Agent, MemoryBlock } from './conversation_utils.ts';
 
 const AGENT_NAME = 'Subconscious';
 

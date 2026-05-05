@@ -11,7 +11,7 @@ import { fileURLToPath } from 'url';
 import {
   buildLettaApiUrl,
   LETTA_API_BASE,
-} from './letta_api_url.js';
+} from './letta_api_url.ts';
 
 // ESM-compatible __dirname
 const __filename = fileURLToPath(import.meta.url);
@@ -58,7 +58,9 @@ export function getMode(): LettaMode {
  * when multiple users share the same machine.
  */
 export function getTempStateDir(): string {
-  const uid = typeof process.getuid === 'function' ? process.getuid() : process.pid;
+  const uid = typeof process.getuid === 'function'
+    ? String(process.getuid())
+    : os.userInfo().username;
   return path.join(os.tmpdir(), `letta-claude-sync-${uid}`);
 }
 

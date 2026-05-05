@@ -34,7 +34,7 @@
   },
   "dependencies": {
     "@letta-ai/letta-code-sdk": "^0.1.0",
-    "tsx": "^4.7.0"
+    "tsx": "^4.21.0"
   },
   "devDependencies": {
     "@types/node": "^20.10.0",

@@ -25,7 +25,7 @@ import * as fs from 'fs';
 import * as path from 'path';
 import { spawn } from 'child_process';
 import { fileURLToPath } from 'url';
-import { getAgentId } from './agent_config.js';
+import { getAgentId } from './agent_config.ts';
 import {
   loadSyncState,
   saveSyncState,
@@ -35,13 +35,13 @@ import {
   getMode,
   getTempStateDir,
   getSdkToolsMode,
-} from './conversation_utils.js';
+} from './conversation_utils.ts';
 import {
   readTranscript,
   formatMessagesForLetta,
   formatAsXmlTranscript,
-} from './transcript_utils.js';
-import { isLocalMode } from './local_store.js';
+} from './transcript_utils.ts';
+import { isLocalMode } from './local_store.ts';
 
 // ESM-compatible __dirname
 const __filename = fileURLToPath(import.meta.url);

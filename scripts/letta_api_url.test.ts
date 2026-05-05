@@ -4,7 +4,7 @@ import {
   buildLettaApiUrl,
   getLettaApiBase,
   normalizeLettaBaseUrl,
-} from './letta_api_url.js';
+} from './letta_api_url.ts';
 
 describe('letta_api_url', () => {
   afterEach(() => {

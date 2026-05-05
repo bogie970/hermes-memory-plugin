@@ -20,8 +20,8 @@
 import * as fs from 'fs';
 import * as path from 'path';
 import * as readline from 'readline';
-import { getAgentId } from './agent_config.js';
-import { buildLettaApiUrl } from './letta_api_url.js';
+import { getAgentId } from './agent_config.ts';
+import { buildLettaApiUrl } from './letta_api_url.ts';
 import {
   loadSyncState,
   saveSyncState,
@@ -37,8 +37,8 @@ import {
   cleanLettaFromClaudeMd,
   getMode,
   getTempStateDir,
-} from './conversation_utils.js';
-import { isLocalMode, getLocalAgent, consumeWhispers } from './local_store.js';
+} from './conversation_utils.ts';
+import { isLocalMode, getLocalAgent, consumeWhispers } from './local_store.ts';
 
 // Configuration
 const DEBUG = process.env.LETTA_DEBUG === '1';

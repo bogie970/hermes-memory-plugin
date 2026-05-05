@@ -10,7 +10,7 @@
  */
 
 import { describe, it, expect, vi, afterEach } from 'vitest';
-import { isValidAgentId, findModel, buildLlmConfig } from './agent_config.js';
+import { isValidAgentId, findModel, buildLlmConfig } from './agent_config.ts';
 
 describe('isValidAgentId', () => {
   describe('valid agent IDs', () => {

@@ -24,7 +24,7 @@
 import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
-import { getAgentId } from './agent_config.js';
+import { getAgentId } from './agent_config.ts';
 import {
   cleanLettaFromClaudeMd,
   createConversation,
@@ -33,9 +33,9 @@ import {
   getTempStateDir,
   getSdkToolsMode,
   expandPath,
-} from './conversation_utils.js';
-import { buildLettaApiUrl } from './letta_api_url.js';
-import { isLocalMode, getLocalAgent, getLocalConversationId } from './local_store.js';
+} from './conversation_utils.ts';
+import { buildLettaApiUrl } from './letta_api_url.ts';
+import { isLocalMode, getLocalAgent, getLocalConversationId } from './local_store.ts';
 
 // Configuration
 const TEMP_STATE_DIR = getTempStateDir();
@@ -249,13 +249,16 @@ async function main(): Promise<void> {
 
   const apiKey = process.env.LETTA_API_KEY;
 
-  // Try to open TTY for user-visible output (bypasses Claude's capture)
-  // Skip on Windows — /dev/tty resolves to C:\dev\tty which doesn't exist
-  let tty: fs.WriteStream | null = null;
-  if (process.platform !== 'win32') {
+  // User-visible output that bypasses Claude's stdout capture.
+  // Unix: write directly to /dev/tty. Windows: use stderr (terminal-visible).
+  let tty: { write(s: string): boolean; end?(): void } | null = null;
+  if (process.platform === 'win32') {
+    tty = process.stderr;
+  } else {
     try {
-      tty = fs.createWriteStream('/dev/tty');
-      tty.on('error', () => { tty = null; });
+      const stream = fs.createWriteStream('/dev/tty');
+      stream.on('error', () => { tty = null; });
+      tty = stream;
     } catch {
       // TTY not available
     }
@@ -286,7 +289,7 @@ async function main(): Promise<void> {
       writeTty(`  Mode:    ${mode}\n`);
       writeTty('  Storage: local blocks (file-backed)\n');
       writeTty('\x1b[0m\n');
-      if (tty) tty.end();
+      if (tty && tty.end && tty !== process.stderr) tty.end();
 
       const conversationId = getLocalConversationId(hookInput.session_id);
       saveSessionState(hookInput.cwd, hookInput.session_id, conversationId);
@@ -399,7 +402,7 @@ async function main(): Promise<void> {
       writeTty('\x1b[0m');
       writeTty('\n');
 
-      if (tty) tty.end();
+      if (tty && tty.end && tty !== process.stderr) tty.end();
 
       await sendSessionStartMessage(apiKey!, conversationId, hookInput.session_id, hookInput.cwd);
       log('Completed successfully');
@@ -413,7 +416,7 @@ async function main(): Promise<void> {
     writeTty('\x1b[31m');
     writeTty(`  Subconscious error: ${errorMessage}\n`);
     writeTty('\x1b[0m');
-    if (tty) tty.end();
+    if (tty && tty.end && tty !== process.stderr) tty.end();
 
     process.exit(1);
   }

@@ -16,16 +16,18 @@
 
 import * as fs from 'fs';
 import * as readline from 'readline';
-import { getAgentId } from './agent_config.js';
-import { buildLettaApiUrl } from './letta_api_url.js';
+import { getAgentId } from './agent_config.ts';
+import { buildLettaApiUrl } from './letta_api_url.ts';
 import {
   loadSyncState,
   saveSyncState,
   lookupConversation,
   SyncState,
   getMode,
-} from './conversation_utils.js';
-import { isLocalMode, getLocalAgent } from './local_store.js';
+  sanitizeBlockLabel,
+  escapeXmlContent,
+} from './conversation_utils.ts';
+import { isLocalMode, getLocalAgent } from './local_store.ts';
 
 const DEBUG = process.env.LETTA_DEBUG === '1';
 
@@ -93,7 +95,7 @@ async function readHookInput(): Promise<HookInput | null> {
 
     setTimeout(() => {
       rl.close();
-    }, 100);
+    }, 1000);
   });
 }
 
@@ -211,42 +213,46 @@ function formatOutput(
   // Format new messages
   if (messages.length > 0) {
     for (const msg of messages) {
-      const timestamp = msg.date || 'unknown';
-      parts.push(`<letta_message from="${agentName}" timestamp="${timestamp}">\n${msg.text}\n</letta_message>`);
+      const timestamp = escapeXmlContent(msg.date || 'unknown');
+      const escapedName = escapeXmlContent(agentName);
+      const escapedText = escapeXmlContent(msg.text);
+      parts.push(`<letta_message from="${escapedName}" timestamp="${timestamp}">\n${escapedText}\n</letta_message>`);
     }
   }
 
   // Format changed blocks with diffs
   if (changedBlocks.length > 0) {
     const blockParts = changedBlocks.map(block => {
+      const safeLabel = sanitizeBlockLabel(block.label);
       const previousValue = lastBlockValues?.[block.label];
-      
+
       if (previousValue === undefined) {
-        return `<${block.label} status="new">\n${block.value}\n</${block.label}>`;
+        const escaped = escapeXmlContent(block.value);
+        return `<${safeLabel} status="new">\n${escaped}\n</${safeLabel}>`;
       }
-      
-      // Simple diff: show what changed
+
       const oldLines = new Set(previousValue.split('\n').map(l => l.trim()).filter(l => l));
       const newLines = block.value.split('\n').map(l => l.trim()).filter(l => l);
-      
+
       const added = newLines.filter(line => !oldLines.has(line));
       const removed = Array.from(oldLines).filter(line => !newLines.includes(line));
-      
+
       if (added.length === 0 && removed.length === 0) {
-        return `<${block.label} status="modified">\n${block.value}\n</${block.label}>`;
+        const escaped = escapeXmlContent(block.value);
+        return `<${safeLabel} status="modified">\n${escaped}\n</${safeLabel}>`;
       }
-      
+
       const diffLines: string[] = [];
       for (const line of removed) {
-        diffLines.push(`- ${line}`);
+        diffLines.push(`- ${escapeXmlContent(line)}`);
       }
       for (const line of added) {
-        diffLines.push(`+ ${line}`);
+        diffLines.push(`+ ${escapeXmlContent(line)}`);
       }
-      
-      return `<${block.label} status="modified">\n${diffLines.join('\n')}\n</${block.label}>`;
+
+      return `<${safeLabel} status="modified">\n${diffLines.join('\n')}\n</${safeLabel}>`;
     });
-    
+
     parts.push(`<letta_memory_update>\n${blockParts.join('\n')}\n</letta_memory_update>`);
   }
 
