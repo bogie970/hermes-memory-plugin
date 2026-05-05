@@ -124,19 +124,28 @@ export function consumeWhispers(cwd: string): Whisper[] {
     return [];
   }
 
+  // Atomic consume: rename first, then read from the renamed copy.
+  // Prevents race where Python writes between our read and unlink.
+  const tmpPath = whispersPath + `.consuming-${process.pid}`;
   try {
-    const raw = JSON.parse(fs.readFileSync(whispersPath, 'utf-8'));
+    fs.renameSync(whispersPath, tmpPath);
+  } catch {
+    return [];
+  }
+
+  try {
+    const raw = JSON.parse(fs.readFileSync(tmpPath, 'utf-8'));
+    try { fs.unlinkSync(tmpPath); } catch {}
     if (!Array.isArray(raw) || raw.length === 0) {
-      try { fs.unlinkSync(whispersPath); } catch {}
       return [];
     }
-    fs.unlinkSync(whispersPath);
-    return raw.filter((w: any) =>
+    const validated = raw.filter((w: any) =>
       w && typeof w.text === 'string' && w.text.length > 0 &&
       typeof w.id === 'string' && typeof w.timestamp === 'string'
     );
+    return validated.slice(0, 20);
   } catch {
-    try { fs.unlinkSync(whispersPath); } catch {}
+    try { fs.unlinkSync(tmpPath); } catch {}
     return [];
   }
 }

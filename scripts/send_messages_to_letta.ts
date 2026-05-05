@@ -173,7 +173,8 @@ async function main(): Promise<void> {
       const hermesRoot = process.env.HERMES_ROOT;
       if (!hermesRoot) {
         log('ERROR: HERMES_ROOT not set — cannot spawn local worker');
-        process.exit(0);
+        console.error('Subconscious: HERMES_ROOT environment variable not set');
+        process.exit(1);
       }
 
       const transcriptXml = formatAsXmlTranscript(newMessages);

@@ -47,7 +47,7 @@ export type LettaMode = 'whisper' | 'full' | 'off';
  * No mode writes to CLAUDE.md.
  */
 export function getMode(): LettaMode {
-  const mode = process.env.LETTA_MODE?.toLowerCase();
+  const mode = process.env.LETTA_MODE?.trim().toLowerCase();
   if (mode === 'full' || mode === 'off') return mode;
   return 'whisper';
 }
@@ -404,6 +404,19 @@ export function escapeXmlContent(str: string): string {
     .replace(/>/g, '&gt;');
 }
 
+const SAFE_LABEL_RE = /^[a-zA-Z_][a-zA-Z0-9_.-]*$/;
+const DANGEROUS_LABELS = new Set([
+  'system', 'instruction', 'system-reminder', 'user-prompt',
+  'tool_use', 'tool_result', 'function_calls', 'invoke',
+]);
+
+export function sanitizeBlockLabel(label: string): string {
+  if (!label || !SAFE_LABEL_RE.test(label) || DANGEROUS_LABELS.has(label.toLowerCase())) {
+    return `block_${label.replace(/[^a-zA-Z0-9_]/g, '_')}`;
+  }
+  return label;
+}
+
 /**
  * Escape special regex characters
  */
@@ -611,9 +624,10 @@ ${locationInfo}
   }
 
   const formattedBlocks = nonEmptyBlocks.map(block => {
+    const safeLabel = sanitizeBlockLabel(block.label);
     const escapedDescription = escapeXmlAttribute(block.description || '');
     const escapedContent = escapeXmlContent(block.value || '');
-    return `<${block.label} description="${escapedDescription}">\n${escapedContent}\n</${block.label}>`;
+    return `<${safeLabel} description="${escapedDescription}">\n${escapedContent}\n</${safeLabel}>`;
   }).join('\n');
 
   return `${header}

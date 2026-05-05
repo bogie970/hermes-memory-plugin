@@ -32,6 +32,7 @@ import {
   MemoryBlock,
   fetchAgent,
   escapeXmlContent,
+  sanitizeBlockLabel,
   formatAllBlocksForStdout,
   cleanLettaFromClaudeMd,
   getMode,
@@ -96,10 +97,10 @@ async function readHookInput(): Promise<HookInput | null> {
       }
     });
 
-    // Timeout after 100ms if no input
+    // Timeout after 1000ms if no input (100ms was too aggressive on loaded machines)
     setTimeout(() => {
       rl.close();
-    }, 100);
+    }, 1000);
   });
 }
 
@@ -155,23 +156,23 @@ function formatChangedBlocksForStdout(
   }
 
   const formatted = nonEmptyChanges.map(block => {
+    const safeLabel = sanitizeBlockLabel(block.label);
     const previousValue = lastBlockValues?.[block.label];
 
     // New block - show full content
     if (previousValue === undefined) {
       const escapedContent = escapeXmlContent(block.value || '');
-      return `<${block.label} status="new">\n${escapedContent}\n</${block.label}>`;
+      return `<${safeLabel} status="new">\n${escapedContent}\n</${safeLabel}>`;
     }
-    
+
     // Existing block - show diff
     const diff = computeDiff(previousValue, block.value || '');
-    
+
     if (diff.added.length === 0 && diff.removed.length === 0) {
-      // Whitespace-only change, show full content
       const escapedContent = escapeXmlContent(block.value || '');
-      return `<${block.label} status="modified">\n${escapedContent}\n</${block.label}>`;
+      return `<${safeLabel} status="modified">\n${escapedContent}\n</${safeLabel}>`;
     }
-    
+
     const diffLines: string[] = [];
     for (const line of diff.removed) {
       diffLines.push(`- ${escapeXmlContent(line)}`);
@@ -179,8 +180,8 @@ function formatChangedBlocksForStdout(
     for (const line of diff.added) {
       diffLines.push(`+ ${escapeXmlContent(line)}`);
     }
-    
-    return `<${block.label} status="modified">\n${diffLines.join('\n')}\n</${block.label}>`;
+
+    return `<${safeLabel} status="modified">\n${diffLines.join('\n')}\n</${safeLabel}>`;
   }).join('\n');
   
   return `<letta_memory_update>
@@ -273,21 +274,20 @@ async function fetchAssistantMessages(
  * Format assistant messages for stdout injection
  */
 function formatMessagesForStdout(agent: Agent, messages: MessageInfo[]): string {
-  const agentName = agent.name || 'Letta Agent';
-  
   if (messages.length === 0) {
-    return `<!-- No new messages from ${agentName} -->`;
+    return '';
   }
-  
-  // Format each message
+
+  const agentName = escapeXmlContent(agent.name || 'Letta Agent');
   const formattedMessages = messages.map((msg, index) => {
-    const timestamp = msg.date || 'unknown';
-    const msgNum = messages.length > 1 ? ` (${index + 1}/${messages.length})` : '';
+    const timestamp = escapeXmlContent(msg.date || 'unknown');
+    const msgNum = messages.length > 1 ? ` msg="${index + 1}/${messages.length}"` : '';
+    const escapedText = escapeXmlContent(msg.text);
     return `<letta_message from="${agentName}"${msgNum} timestamp="${timestamp}">
-${msg.text}
+${escapedText}
 </letta_message>`;
   });
-  
+
   return formattedMessages.join('\n\n');
 }
 
@@ -402,7 +402,9 @@ async function main(): Promise<void> {
       if (whispers.length > 0) {
         const formatted = whispers.map(w => {
           const escapedText = escapeXmlContent(w.text);
-          return `<subconscious_whisper id="${w.id}" timestamp="${w.timestamp}">\n${escapedText}\n</subconscious_whisper>`;
+          const escapedId = escapeXmlContent(w.id);
+          const escapedTs = escapeXmlContent(w.timestamp);
+          return `<subconscious_whisper id="${escapedId}" timestamp="${escapedTs}">\n${escapedText}\n</subconscious_whisper>`;
         }).join('\n');
         outputs.push(formatted);
         const wCount = whispers.length === 1 ? '1 whisper' : `${whispers.length} whispers`;
