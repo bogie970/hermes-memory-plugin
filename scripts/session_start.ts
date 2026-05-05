@@ -35,6 +35,7 @@ import {
   expandPath,
 } from './conversation_utils.js';
 import { buildLettaApiUrl } from './letta_api_url.js';
+import { isLocalMode, getLocalAgent, getLocalConversationId } from './local_store.js';
 
 // Configuration
 const TEMP_STATE_DIR = getTempStateDir();
@@ -248,21 +249,15 @@ async function main(): Promise<void> {
 
   const apiKey = process.env.LETTA_API_KEY;
 
-  if (!apiKey) {
-    log('ERROR: LETTA_API_KEY not set');
-    console.error('Error: LETTA_API_KEY must be set');
-    process.exit(1);
-  }
-
   // Try to open TTY for user-visible output (bypasses Claude's capture)
   // Skip on Windows — /dev/tty resolves to C:\dev\tty which doesn't exist
   let tty: fs.WriteStream | null = null;
   if (process.platform !== 'win32') {
     try {
       tty = fs.createWriteStream('/dev/tty');
-      tty.on('error', () => { tty = null; }); // Handle async ENXIO when /dev/tty unavailable
+      tty.on('error', () => { tty = null; });
     } catch {
-      // TTY not available (e.g., non-interactive session)
+      // TTY not available
     }
   }
 
@@ -271,145 +266,153 @@ async function main(): Promise<void> {
   };
 
   try {
-    // Show initial connecting message with mascot
-    writeTty('\n');
-    writeTty('\x1b[1m  Claude Subconscious\x1b[0m\n');
-    writeTty('\n');
-    writeTty('\x1b[35m'); // Purple
-    writeTty('  ▐\x1b[31m▛\x1b[35m███\x1b[31m▜\x1b[35m▌\n');
-    writeTty(' ▝▜█████▛▘\n');
-    writeTty('   ▘▘ ▝▝\n');
-    writeTty('\x1b[0m'); // Reset
-    writeTty('\x1b[2m  Connecting...\x1b[0m');
-
-    // Get agent ID (from env, saved config, or auto-import)
-    const agentId = await getAgentId(apiKey, log);
-
-    // Fetch agent details for display
-    const agent = await fetchAgent(apiKey, agentId);
-    const agentName = agent.name || 'Unnamed Agent';
-    const modelHandle = (agent as any).llm_config?.handle || (agent as any).llm_config?.model || 'unknown';
-
-    // Clear connecting message and show info
-    writeTty('\r\x1b[K'); // Clear current line
-    writeTty('\n  Agent information:\n');
-    writeTty('\x1b[1m'); // Bold
-    writeTty(`  ${agentName}\n`);
-    writeTty('\x1b[0m'); // Reset
-    writeTty('\x1b[2m'); // Dim
-    writeTty(`  ${agentId}\n`);
-    writeTty('\n');
-
-    // Settings
-    const sdkTools = process.env.LETTA_SDK_TOOLS || 'read-only';
-    const baseUrl = process.env.LETTA_BASE_URL || 'https://api.letta.com';
-    writeTty(`  Model:      ${modelHandle}\n`);
-    writeTty(`  Mode:       ${mode}\n`);
-    writeTty(`  SDK Tools:  ${sdkTools}\n`);
-    if (process.env.LETTA_BASE_URL) {
-      writeTty(`  Server:     ${baseUrl}\n`);
-    }
-    if (process.env.LETTA_HOME) {
-      writeTty(`  Home:       ${expandPath(process.env.LETTA_HOME)}\n`);
-    }
-    writeTty('\n');
-    writeTty('  Learn about configuration settings:\n');
-    writeTty('  github.com/letta-ai/claude-subconscious\n');
-    writeTty('\x1b[0m'); // Reset
-    writeTty('\n');
-    // Read hook input
+    // Read hook input first (needed by both modes)
     log('Reading hook input from stdin...');
     const hookInput = await readHookInput();
     log(`Hook input: session_id=${hookInput.session_id}, cwd=${hookInput.cwd}`);
 
-    // Check if conversation already exists for this session
-    const conversationsMap = loadConversationsMap(hookInput.cwd);
+    if (isLocalMode()) {
+      // ── LOCAL MODE ──
+      log('Local mode (no LETTA_API_KEY) — using local file storage');
 
-    let conversationId: string;
-    const cached = conversationsMap[hookInput.session_id];
-
-    if (cached) {
-      // Parse both old format (string) and new format (object)
-      const entry = typeof cached === 'string'
-        ? { conversationId: cached, agentId: null as string | null }
-        : cached;
-
-      if (entry.agentId && entry.agentId !== agentId) {
-        // Agent ID changed - clear stale entry and create new conversation
-        log(`Agent ID changed (${entry.agentId} -> ${agentId}), clearing stale conversation`);
-        delete conversationsMap[hookInput.session_id];
-        conversationId = await createConversation(apiKey, agentId, log);
-        conversationsMap[hookInput.session_id] = { conversationId, agentId };
-        saveConversationsMap(hookInput.cwd, conversationsMap);
-      } else if (!entry.agentId) {
-        // Old format without agentId - upgrade by recreating
-        log(`Upgrading old format entry (no agentId stored), creating new conversation`);
-        delete conversationsMap[hookInput.session_id];
-        conversationId = await createConversation(apiKey, agentId, log);
-        conversationsMap[hookInput.session_id] = { conversationId, agentId };
-        saveConversationsMap(hookInput.cwd, conversationsMap);
-      } else {
-        // Valid entry with matching agentId - reuse
-        conversationId = entry.conversationId;
-        log(`Reusing existing conversation: ${conversationId}`);
-      }
-    } else {
-      // No existing entry - create new conversation
-      conversationId = await createConversation(apiKey, agentId, log);
-      conversationsMap[hookInput.session_id] = { conversationId, agentId };
-      saveConversationsMap(hookInput.cwd, conversationsMap);
-    }
-
-    // Save session state
-    saveSessionState(hookInput.cwd, hookInput.session_id, conversationId);
-
-    // Clean up any existing <letta> section from CLAUDE.md (legacy migration)
-    log('Cleaning up any legacy CLAUDE.md content...');
-    cleanLettaFromClaudeMd(hookInput.cwd);
-
-    // Also clean the global ~/.claude/CLAUDE.md (may have bloat from pre-v1.3.0)
-    const homeDir = process.env.HOME || os.homedir();
-    if (homeDir !== hookInput.cwd) {
-      log('Cleaning up global ~/.claude/CLAUDE.md...');
-      cleanLettaFromClaudeMd(homeDir);
-    }
-    log('CLAUDE.md cleanup done');
-
-    // Show conversation link (only for hosted Letta) - print before blocking send
-    const isHosted = !process.env.LETTA_BASE_URL;
-    if (isHosted) {
-      const convUrl = `https://app.letta.com/agents/${agentId}?conversation=${conversationId}`;
-      writeTty('\x1b[2m'); // Dim
-      writeTty('  View the subconscious agent:\n');
-      writeTty(`  ${convUrl}\n`);
-      writeTty('\x1b[0m'); // Reset
       writeTty('\n');
+      writeTty('\x1b[1m  Claude Subconscious\x1b[0m \x1b[2m(local)\x1b[0m\n');
+      writeTty('\x1b[35m');
+      writeTty('  ▐\x1b[31m▛\x1b[35m███\x1b[31m▜\x1b[35m▌\n');
+      writeTty(' ▝▜█████▛▘\n');
+      writeTty('   ▘▘ ▝▝\n');
+      writeTty('\x1b[0m');
+      writeTty('\x1b[2m');
+      writeTty(`  Mode:    ${mode}\n`);
+      writeTty('  Storage: local blocks (file-backed)\n');
+      writeTty('\x1b[0m\n');
+      if (tty) tty.end();
+
+      const conversationId = getLocalConversationId(hookInput.session_id);
+      saveSessionState(hookInput.cwd, hookInput.session_id, conversationId);
+
+      cleanLettaFromClaudeMd(hookInput.cwd);
+      const homeDir = process.env.HOME || os.homedir();
+      if (homeDir !== hookInput.cwd) {
+        cleanLettaFromClaudeMd(homeDir);
+      }
+
+      log('Local mode session_start completed');
+
+    } else {
+      // ── CLOUD MODE (original Letta API flow) ──
+      writeTty('\n');
+      writeTty('\x1b[1m  Claude Subconscious\x1b[0m\n');
+      writeTty('\n');
+      writeTty('\x1b[35m');
+      writeTty('  ▐\x1b[31m▛\x1b[35m███\x1b[31m▜\x1b[35m▌\n');
+      writeTty(' ▝▜█████▛▘\n');
+      writeTty('   ▘▘ ▝▝\n');
+      writeTty('\x1b[0m');
+      writeTty('\x1b[2m  Connecting...\x1b[0m');
+
+      const agentId = await getAgentId(apiKey!, log);
+      const agent = await fetchAgent(apiKey!, agentId);
+      const agentName = agent.name || 'Unnamed Agent';
+      const modelHandle = (agent as any).llm_config?.handle || (agent as any).llm_config?.model || 'unknown';
+
+      writeTty('\r\x1b[K');
+      writeTty('\n  Agent information:\n');
+      writeTty('\x1b[1m');
+      writeTty(`  ${agentName}\n`);
+      writeTty('\x1b[0m');
+      writeTty('\x1b[2m');
+      writeTty(`  ${agentId}\n`);
+      writeTty('\n');
+
+      const sdkTools = process.env.LETTA_SDK_TOOLS || 'read-only';
+      const baseUrl = process.env.LETTA_BASE_URL || 'https://api.letta.com';
+      writeTty(`  Model:      ${modelHandle}\n`);
+      writeTty(`  Mode:       ${mode}\n`);
+      writeTty(`  SDK Tools:  ${sdkTools}\n`);
+      if (process.env.LETTA_BASE_URL) {
+        writeTty(`  Server:     ${baseUrl}\n`);
+      }
+      if (process.env.LETTA_HOME) {
+        writeTty(`  Home:       ${expandPath(process.env.LETTA_HOME)}\n`);
+      }
+      writeTty('\n');
+      writeTty('  Learn about configuration settings:\n');
+      writeTty('  github.com/letta-ai/claude-subconscious\n');
+      writeTty('\x1b[0m');
+      writeTty('\n');
+
+      const conversationsMap = loadConversationsMap(hookInput.cwd);
+      let conversationId: string;
+      const cached = conversationsMap[hookInput.session_id];
+
+      if (cached) {
+        const entry = typeof cached === 'string'
+          ? { conversationId: cached, agentId: null as string | null }
+          : cached;
+
+        if (entry.agentId && entry.agentId !== agentId) {
+          log(`Agent ID changed (${entry.agentId} -> ${agentId}), clearing stale conversation`);
+          delete conversationsMap[hookInput.session_id];
+          conversationId = await createConversation(apiKey!, agentId, log);
+          conversationsMap[hookInput.session_id] = { conversationId, agentId };
+          saveConversationsMap(hookInput.cwd, conversationsMap);
+        } else if (!entry.agentId) {
+          log(`Upgrading old format entry, creating new conversation`);
+          delete conversationsMap[hookInput.session_id];
+          conversationId = await createConversation(apiKey!, agentId, log);
+          conversationsMap[hookInput.session_id] = { conversationId, agentId };
+          saveConversationsMap(hookInput.cwd, conversationsMap);
+        } else {
+          conversationId = entry.conversationId;
+          log(`Reusing existing conversation: ${conversationId}`);
+        }
+      } else {
+        conversationId = await createConversation(apiKey!, agentId, log);
+        conversationsMap[hookInput.session_id] = { conversationId, agentId };
+        saveConversationsMap(hookInput.cwd, conversationsMap);
+      }
+
+      saveSessionState(hookInput.cwd, hookInput.session_id, conversationId);
+
+      log('Cleaning up any legacy CLAUDE.md content...');
+      cleanLettaFromClaudeMd(hookInput.cwd);
+      const homeDir = process.env.HOME || os.homedir();
+      if (homeDir !== hookInput.cwd) {
+        cleanLettaFromClaudeMd(homeDir);
+      }
+      log('CLAUDE.md cleanup done');
+
+      const isHosted = !process.env.LETTA_BASE_URL;
+      if (isHosted) {
+        const convUrl = `https://app.letta.com/agents/${agentId}?conversation=${conversationId}`;
+        writeTty('\x1b[2m');
+        writeTty('  View the subconscious agent:\n');
+        writeTty(`  ${convUrl}\n`);
+        writeTty('\x1b[0m');
+        writeTty('\n');
+      }
+
+      writeTty('\x1b[2m');
+      writeTty('  Come talk to us on Discord:\n');
+      writeTty('  https://discord.gg/letta\n');
+      writeTty('\x1b[0m');
+      writeTty('\n');
+
+      if (tty) tty.end();
+
+      await sendSessionStartMessage(apiKey!, conversationId, hookInput.session_id, hookInput.cwd);
+      log('Completed successfully');
     }
-
-    // Discord link
-    writeTty('\x1b[2m'); // Dim
-    writeTty('  Come talk to us on Discord:\n');
-    writeTty('  https://discord.gg/letta\n');
-    writeTty('\x1b[0m'); // Reset
-    writeTty('\n');
-
-    // Close TTY before potentially slow network call
-    if (tty) tty.end();
-
-    // Send session start message (may take a while, but TTY output is done)
-    await sendSessionStartMessage(apiKey, conversationId, hookInput.session_id, hookInput.cwd);
-
-    log('Completed successfully');
 
   } catch (error) {
     const errorMessage = error instanceof Error ? error.message : String(error);
     log(`ERROR: ${errorMessage}`);
 
-    // Show error to user
-    writeTty('\r\x1b[K'); // Clear current line
-    writeTty('\x1b[31m'); // Red
-    writeTty(`  Letta error: ${errorMessage}\n`);
-    writeTty('\x1b[0m'); // Reset
+    writeTty('\r\x1b[K');
+    writeTty('\x1b[31m');
+    writeTty(`  Subconscious error: ${errorMessage}\n`);
+    writeTty('\x1b[0m');
     if (tty) tty.end();
 
     process.exit(1);

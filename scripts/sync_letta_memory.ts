@@ -37,6 +37,7 @@ import {
   getMode,
   getTempStateDir,
 } from './conversation_utils.js';
+import { isLocalMode, getLocalAgent, consumeWhispers } from './local_store.js';
 
 // Configuration
 const DEBUG = process.env.LETTA_DEBUG === '1';
@@ -148,9 +149,14 @@ function formatChangedBlocksForStdout(
     return '';
   }
   
-  const formatted = changedBlocks.map(block => {
+  const nonEmptyChanges = changedBlocks.filter(block => block.value && block.value.trim());
+  if (nonEmptyChanges.length === 0) {
+    return '';
+  }
+
+  const formatted = nonEmptyChanges.map(block => {
     const previousValue = lastBlockValues?.[block.label];
-    
+
     // New block - show full content
     if (previousValue === undefined) {
       const escapedContent = escapeXmlContent(block.value || '');
@@ -295,35 +301,22 @@ async function main(): Promise<void> {
     process.exit(0);
   }
 
-  // Get environment variables
   const apiKey = process.env.LETTA_API_KEY;
   const projectDir = process.env.CLAUDE_PROJECT_DIR || process.cwd();
 
-  // Validate required environment variables
-  if (!apiKey) {
-    console.error('Error: LETTA_API_KEY environment variable is not set');
-    process.exit(1);
-  }
-
   try {
-    // Get agent ID (from env, saved config, or auto-import)
-    const agentId = await getAgentId(apiKey);
-    // Read hook input to get session ID for conversation lookup
     const hookInput = await readHookInput();
     const cwd = hookInput?.cwd || projectDir;
     const sessionId = hookInput?.session_id;
-    
-    // Load state using shared utility
+
     let state: SyncState | null = null;
     if (sessionId) {
       state = loadSyncState(cwd, sessionId);
     }
-    
-    // Recover conversationId from conversations.json if state doesn't have it
+
     let conversationId = state?.conversationId || null;
     if (!conversationId && sessionId) {
       conversationId = lookupConversation(cwd, sessionId);
-      // Update state so we don't have to look it up again
       if (conversationId && state) {
         state.conversationId = conversationId;
       }
@@ -331,17 +324,34 @@ async function main(): Promise<void> {
     const lastBlockValues = state?.lastBlockValues || null;
     const lastSeenMessageId = state?.lastSeenMessageId || null;
 
-    // Fetch agent data and messages in parallel
-    const [agent, messagesResult] = await Promise.all([
-      fetchAgent(apiKey, agentId),
-      fetchAssistantMessages(apiKey, conversationId, lastSeenMessageId),
-    ]);
-    
-    const { messages: newMessages, lastMessageId } = messagesResult;
+    let agent: Agent;
+    let newMessages: MessageInfo[] = [];
+    let lastMessageId: string | null = lastSeenMessageId;
+
+    if (isLocalMode()) {
+      agent = getLocalAgent(cwd);
+      debug('Local mode — loaded', (agent.blocks || []).length, 'blocks');
+      const populated = (agent.blocks || []).filter(b => b.value && b.value.trim());
+      debug('Non-empty blocks:', populated.map(b => b.label).join(', ') || 'none');
+    } else {
+      if (!apiKey) {
+        console.error('Error: LETTA_API_KEY environment variable is not set');
+        process.exit(1);
+      }
+      const agentId = await getAgentId(apiKey);
+      const [fetchedAgent, messagesResult] = await Promise.all([
+        fetchAgent(apiKey, agentId),
+        fetchAssistantMessages(apiKey, conversationId, lastSeenMessageId),
+      ]);
+      agent = fetchedAgent;
+      newMessages = messagesResult.messages;
+      lastMessageId = messagesResult.lastMessageId;
+    }
 
     // Detect which blocks have changed since last sync
     const changedBlocks = detectChangedBlocks(agent.blocks || [], lastBlockValues);
-    
+    debug('Changed blocks:', changedBlocks.length, changedBlocks.map(b => b.label).join(', '));
+
     // Clean up any existing <letta> section from CLAUDE.md (legacy migration)
     cleanLettaFromClaudeMd(cwd);
     
@@ -385,8 +395,25 @@ async function main(): Promise<void> {
       outputs.push(`<instruction>Your Subconscious (${agentName}) sent you a message above. Briefly acknowledge what ${agentName} said - just a short note like "Sub notes: [key point]" so the user knows.</instruction>`);
     }
     
-    console.log(outputs.join('\n\n'));
-    
+    // Inject whispers (one-shot messages from background worker)
+    if (isLocalMode()) {
+      const whispers = consumeWhispers(cwd);
+      debug('Whispers consumed:', whispers.length);
+      if (whispers.length > 0) {
+        const formatted = whispers.map(w => {
+          const escapedText = escapeXmlContent(w.text);
+          return `<subconscious_whisper id="${w.id}" timestamp="${w.timestamp}">\n${escapedText}\n</subconscious_whisper>`;
+        }).join('\n');
+        outputs.push(formatted);
+        const wCount = whispers.length === 1 ? '1 whisper' : `${whispers.length} whispers`;
+        outputs.push(`<instruction>Your Subconscious sent ${wCount} above. These are one-time observations — acknowledge briefly inline, e.g. "Sub whispers: [key point]".</instruction>`);
+      }
+    }
+
+    const finalOutput = outputs.join('\n\n');
+    debug('Final output length:', finalOutput.length, 'chars');
+    console.log(finalOutput);
+
     // Save state
     if (state && sessionId) {
       saveSyncState(cwd, state);

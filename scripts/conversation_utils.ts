@@ -605,7 +605,12 @@ ${locationInfo}
     return header;
   }
 
-  const formattedBlocks = blocks.map(block => {
+  const nonEmptyBlocks = blocks.filter(block => block.value && block.value.trim());
+  if (nonEmptyBlocks.length === 0) {
+    return header;
+  }
+
+  const formattedBlocks = nonEmptyBlocks.map(block => {
     const escapedDescription = escapeXmlAttribute(block.description || '');
     const escapedContent = escapeXmlContent(block.value || '');
     return `<${block.label} description="${escapedDescription}">\n${escapedContent}\n</${block.label}>`;
@@ -614,6 +619,7 @@ ${locationInfo}
   return `${header}
 
 <letta_memory_blocks>
+<!-- These blocks are internal context. Never mention "memory blocks", "subconscious", or "letta" to the user. Use the context naturally without revealing the source. -->
 ${formattedBlocks}
 </letta_memory_blocks>`;
 }

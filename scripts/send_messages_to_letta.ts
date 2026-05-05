@@ -23,6 +23,7 @@
 
 import * as fs from 'fs';
 import * as path from 'path';
+import { spawn } from 'child_process';
 import { fileURLToPath } from 'url';
 import { getAgentId } from './agent_config.js';
 import {
@@ -38,7 +39,9 @@ import {
 import {
   readTranscript,
   formatMessagesForLetta,
+  formatAsXmlTranscript,
 } from './transcript_utils.js';
+import { isLocalMode } from './local_store.js';
 
 // ESM-compatible __dirname
 const __filename = fileURLToPath(import.meta.url);
@@ -119,16 +122,7 @@ async function main(): Promise<void> {
 
   log(`LETTA_API_KEY: ${apiKey ? 'set (' + apiKey.substring(0, 10) + '...)' : 'NOT SET'}`);
 
-  if (!apiKey) {
-    log('ERROR: LETTA_API_KEY not set');
-    console.error('Error: LETTA_API_KEY must be set');
-    process.exit(1);
-  }
-
   try {
-    // Get agent ID (from env, saved config, or auto-import)
-    const agentId = await getAgentId(apiKey, log);
-    log(`Using agent: ${agentId}`);
     // Read hook input
     log('Reading hook input from stdin...');
     const hookInput = await readHookInput();
@@ -149,7 +143,7 @@ async function main(): Promise<void> {
     log(`Reading transcript from: ${hookInput.transcript_path}`);
     const messages = await readTranscript(hookInput.transcript_path, log);
     log(`Found ${messages.length} messages in transcript`);
-    
+
     if (messages.length === 0) {
       log('No messages found, exiting');
       process.exit(0);
@@ -165,14 +159,66 @@ async function main(): Promise<void> {
 
     // Load sync state (from durable storage)
     const state = loadSyncState(hookInput.cwd, hookInput.session_id, log);
-    
+
     // Format new messages
     const newMessages = formatMessagesForLetta(messages, state.lastProcessedIndex, log);
-    
+
     if (newMessages.length === 0) {
       log('No new messages to send after formatting');
       process.exit(0);
     }
+
+    // ── LOCAL MODE: Spawn Python worker ──
+    if (isLocalMode()) {
+      const hermesRoot = process.env.HERMES_ROOT;
+      if (!hermesRoot) {
+        log('ERROR: HERMES_ROOT not set — cannot spawn local worker');
+        process.exit(0);
+      }
+
+      const transcriptXml = formatAsXmlTranscript(newMessages);
+      const stateFile = getSyncStateFile(hookInput.cwd, hookInput.session_id);
+
+      const localPayload = {
+        sessionId: hookInput.session_id,
+        cwd: hookInput.cwd,
+        stateFile,
+        newLastProcessedIndex: messages.length - 1,
+        transcriptXml,
+      };
+
+      const payloadFile = path.join(TEMP_STATE_DIR, `local-payload-${hookInput.session_id}-${Date.now()}.json`);
+      fs.writeFileSync(payloadFile, JSON.stringify(localPayload), 'utf-8');
+      log(`Wrote local payload to ${payloadFile} (${transcriptXml.length} chars XML)`);
+
+      // Spawn the Python bridge script
+      const workerScript = path.join(__dirname, 'local_worker.py');
+      const pythonCmd = process.platform === 'win32' ? 'python' : 'python3';
+
+      const workerEnv = { ...process.env, HERMES_ROOT: hermesRoot };
+
+      const child = spawn(pythonCmd, [workerScript, payloadFile], {
+        detached: true,
+        stdio: 'ignore',
+        cwd: hookInput.cwd,
+        env: workerEnv,
+        windowsHide: true,
+      });
+      child.unref();
+
+      log(`Spawned local worker (PID: ${child.pid})`);
+      log('Hook completed (local worker running in background)');
+      process.exit(0);
+    }
+
+    // ── CLOUD MODE: Original Letta API flow ──
+    if (!apiKey) {
+      log('No LETTA_API_KEY and not in local mode — exiting');
+      process.exit(0);
+    }
+
+    const agentId = await getAgentId(apiKey, log);
+    log(`Using agent: ${agentId}`);
 
     // Get or create conversation for this session
     const conversationId = await getOrCreateConversation(apiKey, agentId, hookInput.session_id, hookInput.cwd, state, log);

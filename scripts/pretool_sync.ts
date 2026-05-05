@@ -25,6 +25,7 @@ import {
   SyncState,
   getMode,
 } from './conversation_utils.js';
+import { isLocalMode, getLocalAgent } from './local_store.js';
 
 const DEBUG = process.env.LETTA_DEBUG === '1';
 
@@ -262,15 +263,10 @@ async function main(): Promise<void> {
   }
 
   const apiKey = process.env.LETTA_API_KEY;
-  
-  if (!apiKey) {
-    debug('No LETTA_API_KEY set, skipping');
-    process.exit(0);
-  }
 
   try {
     const hookInput = await readHookInput();
-    
+
     if (!hookInput?.session_id || !hookInput?.cwd) {
       debug('Missing session_id or cwd, skipping');
       process.exit(0);
@@ -278,31 +274,37 @@ async function main(): Promise<void> {
 
     debug(`PreToolUse for tool: ${hookInput.tool_name}`);
 
-    // Load state
     const state = loadSyncState(hookInput.cwd, hookInput.session_id);
-    
-    // Need existing state to detect changes
+
     if (!state.lastBlockValues && !state.lastSeenMessageId) {
       debug('No previous state, skipping (UserPromptSubmit will handle first sync)');
       process.exit(0);
     }
 
-    // Get agent ID
-    const agentId = await getAgentId(apiKey);
-    
-    // Get conversation ID
-    let conversationId = state.conversationId || null;
-    if (!conversationId) {
-      conversationId = lookupConversation(hookInput.cwd, hookInput.session_id);
+    let agent: Agent;
+    let newMessages: MessageInfo[] = [];
+    let lastMessageId: string | null = state.lastSeenMessageId || null;
+
+    if (isLocalMode()) {
+      agent = getLocalAgent(hookInput.cwd);
+    } else {
+      if (!apiKey) {
+        debug('No LETTA_API_KEY set, skipping');
+        process.exit(0);
+      }
+      const agentId = await getAgentId(apiKey);
+      let conversationId = state.conversationId || null;
+      if (!conversationId) {
+        conversationId = lookupConversation(hookInput.cwd, hookInput.session_id);
+      }
+      const [fetchedAgent, messagesResult] = await Promise.all([
+        fetchAgent(apiKey, agentId),
+        fetchNewMessages(apiKey, conversationId, state.lastSeenMessageId || null),
+      ]);
+      agent = fetchedAgent;
+      newMessages = messagesResult.messages;
+      lastMessageId = messagesResult.lastMessageId;
     }
-
-    // Fetch current state from Letta
-    const [agent, messagesResult] = await Promise.all([
-      fetchAgent(apiKey, agentId),
-      fetchNewMessages(apiKey, conversationId, state.lastSeenMessageId || null),
-    ]);
-
-    const { messages: newMessages, lastMessageId } = messagesResult;
     const changedBlocks = detectChangedBlocks(agent.blocks || [], state.lastBlockValues || null);
 
     debug(`New messages: ${newMessages.length}, Changed blocks: ${changedBlocks.length}`);
