@@ -12,19 +12,7 @@
           {
             "type": "command",
             "command": "node \"${CLAUDE_PLUGIN_ROOT:-.}/hooks/silent-npx.cjs\" tsx \"${CLAUDE_PLUGIN_ROOT:-.}/scripts/sync_letta_memory.ts\"",
-            "timeout": 10
-          }
-        ]
-      }
-    ],
-    "PreToolUse": [
-      {
-        "matcher": "*",
-        "hooks": [
-          {
-            "type": "command",
-            "command": "node \"${CLAUDE_PLUGIN_ROOT:-.}/hooks/silent-npx.cjs\" tsx \"${CLAUDE_PLUGIN_ROOT:-.}/scripts/pretool_sync.ts\"",
-            "timeout": 5
+            "timeout": 30
           }
         ]
       }
@@ -36,7 +24,7 @@
           {
             "type": "command",
             "command": "node \"${CLAUDE_PLUGIN_ROOT:-.}/hooks/silent-npx.cjs\" tsx \"${CLAUDE_PLUGIN_ROOT:-.}/scripts/sync_letta_memory.ts\"",
-            "timeout": 10
+            "timeout": 30
           }
         ]
       }

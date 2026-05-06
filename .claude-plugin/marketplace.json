@@ -1,12 +1,12 @@
 {
-  "name": "claude-subconscious",
+  "name": "hermes-memory",
   "owner": {
-    "name": "Letta",
-    "url": "https://letta.com"
+    "name": "bogie970",
+    "url": "https://github.com/bogie970"
   },
   "plugins": [
     {
-      "name": "claude-subconscious",
+      "name": "hermes-memory",
       "source": "./"
     }
   ]

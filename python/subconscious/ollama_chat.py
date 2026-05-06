@@ -118,7 +118,7 @@ def extract_tool_calls(message: dict[str, Any]) -> list[dict[str, Any]]:
     return calls
 
 
-def make_tool_result_message(tool_name: str, content: str) -> dict[str, Any]:
+def make_tool_result_message(tool_name: str, content: str, tool_use_id: str = "") -> dict[str, Any]:
     """Create a tool result message to send back to Ollama."""
     return {
         "role": "tool",

@@ -1,17 +1,27 @@
-"""Agentic loop: transcript -> Ollama /api/chat -> tool_calls -> execute -> resend.
+"""Agentic loop: transcript -> LLM chat -> tool_calls -> execute -> resend.
 
 All block mutations are buffered and written atomically at the end of
 a successful loop iteration. This prevents partial writes on crash.
+
+Provider: Anthropic (Haiku) by default. Set SUBCONSCIOUS_PROVIDER=ollama to use Ollama.
 """
 
 from __future__ import annotations
 
 import json
 import logging
+import os
 import time
 from typing import Any
 
-from . import ollama_chat
+_provider = os.getenv("SUBCONSCIOUS_PROVIDER", "claude-cli").lower()
+if _provider == "ollama":
+    from . import ollama_chat as _chat
+elif _provider == "anthropic":
+    from . import anthropic_chat as _chat  # type: ignore[no-redef]
+else:
+    from . import claude_cli_chat as _chat  # type: ignore[no-redef]
+
 from .blocks import BlockStore
 from .config import (
     BLOCK_LABELS,
@@ -94,7 +104,7 @@ def run_loop(
         log.info("Loop iteration %d (%.1fs elapsed)", iteration, elapsed)
 
         try:
-            response = ollama_chat.chat(
+            response = _chat.chat(
                 messages=messages,
                 tools=TOOL_DEFINITIONS,
                 model=model,
@@ -102,7 +112,7 @@ def run_loop(
                 timeout=max(1, int(LOOP_TIMEOUT_SECONDS - elapsed)),
                 temperature=0.7,
             )
-        except ollama_chat.OllamaError as e:
+        except _chat.OllamaError as e:
             log.error("Ollama error: %s", e)
             result.error = str(e)
 
@@ -115,7 +125,7 @@ def run_loop(
                 log.warning("No time left for retry")
                 break
             try:
-                response = ollama_chat.chat(
+                response = _chat.chat(
                     messages=messages,
                     tools=TOOL_DEFINITIONS,
                     model=model,
@@ -124,7 +134,7 @@ def run_loop(
                     temperature=0.7,
                 )
                 result.error = None
-            except ollama_chat.OllamaError as e2:
+            except _chat.OllamaError as e2:
                 log.error("Retry failed: %s", e2)
                 result.error = str(e2)
                 break
@@ -132,7 +142,7 @@ def run_loop(
         # Append assistant response to conversation
         messages.append(response)
 
-        tool_calls = ollama_chat.extract_tool_calls(response)
+        tool_calls = _chat.extract_tool_calls(response)
 
         if not tool_calls:
             # Check if model put tool calls in content (qwen2.5 bug workaround)
@@ -166,6 +176,7 @@ def run_loop(
         for tc in unique_calls:
             name = tc["name"]
             args = tc["arguments"]
+            tool_use_id = tc.get("_id", name)
 
             # Validate block label
             if "label" in args and args["label"] not in BLOCK_LABELS:
@@ -176,7 +187,7 @@ def run_loop(
 
             result.tool_calls_made.append({"name": name, "args": args, "result": tool_result})
 
-            messages.append(ollama_chat.make_tool_result_message(name, tool_result))
+            messages.append(_chat.make_tool_result_message(name, tool_result, tool_use_id))
 
     else:
         log.warning("Reached max iterations (%d)", MAX_LOOP_ITERATIONS)

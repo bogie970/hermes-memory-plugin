@@ -1,7 +1,6 @@
 /**
- * Local file-based storage for memory blocks.
- * Replaces Letta Cloud API calls with local JSON file reads.
- * Phase 1: read-only (no AI processing, just load/save blocks).
+ * Local file-based pattern store + whisper queue.
+ * Loads/saves the 5 letta-style pattern blocks and consumes one-shot whispers.
  */
 
 import * as fs from 'fs';
@@ -10,11 +9,7 @@ import * as crypto from 'crypto';
 import { fileURLToPath } from 'url';
 import { Agent, MemoryBlock } from './conversation_utils.ts';
 
-const AGENT_NAME = 'Subconscious';
-
-export function isLocalMode(): boolean {
-  return !process.env.LETTA_API_KEY;
-}
+const AGENT_NAME = 'Hermes';
 
 function getBlocksFilePath(cwd: string): string {
   const home = process.env.LETTA_HOME
