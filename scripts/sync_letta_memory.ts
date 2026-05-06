@@ -11,6 +11,7 @@
  */
 
 import * as fs from 'fs';
+import * as os from 'os';
 import * as path from 'path';
 import * as readline from 'readline';
 import { spawnSync } from 'child_process';
@@ -151,6 +152,43 @@ ${formatted}
 </patterns_update>`;
 }
 
+function _sanitizeCwd(cwd: string): string {
+  return cwd.replace(/[\\/:]/g, '-').replace(/^-+/, '');
+}
+
+function _markerDir(cwd: string): string {
+  return path.join(os.homedir(), '.claude', 'projects', _sanitizeCwd(cwd), 'l1_markers');
+}
+
+/**
+ * Read and consume L1-evicted marker files. Renames consumed files
+ * to .consumed-<ts>.md (don't delete — useful for postmortem).
+ */
+function consumeL1Markers(cwd: string): string[] {
+  const dir = _markerDir(cwd);
+  if (!fs.existsSync(dir)) return [];
+  const out: string[] = [];
+  let entries: string[] = [];
+  try {
+    entries = fs.readdirSync(dir);
+  } catch {
+    return [];
+  }
+  for (const name of entries) {
+    if (!name.startsWith('l1_evicted_') || !name.endsWith('.md')) continue;
+    const full = path.join(dir, name);
+    try {
+      const content = fs.readFileSync(full, 'utf-8').trim();
+      if (content) out.push(content);
+      const consumed = full.replace(/\.md$/, `.consumed-${Date.now()}.md`);
+      fs.renameSync(full, consumed);
+    } catch (e) {
+      debug('marker read failed:', name, e);
+    }
+  }
+  return out;
+}
+
 /**
  * Retrieve query-dependent memories from LanceDB vector store.
  * Calls Python subprocess: memory.query_retrieve
@@ -267,6 +305,13 @@ async function main(): Promise<void> {
       if (retrievedXml) {
         outputs.push(retrievedXml);
       }
+    }
+
+    // L1-evicted markers (Phase D) — emitted by l1_watch / precompact_safety
+    const markers = consumeL1Markers(cwd);
+    if (markers.length > 0) {
+      outputs.push(...markers);
+      outputs.push(`<instruction>L1 manager evicted ${markers.length} chunk-block(s) above. Use memory_recall(query, scope="l1_evict") if you need details from the evicted content.</instruction>`);
     }
 
     // Whispers — one-shot observations from subconscious worker

@@ -38,6 +38,24 @@
             "command": "node \"${CLAUDE_PLUGIN_ROOT:-.}/hooks/silent-npx.cjs\" tsx \"${CLAUDE_PLUGIN_ROOT:-.}/scripts/send_messages_to_letta.ts\"",
             "timeout": 120,
             "async": true
+          },
+          {
+            "type": "command",
+            "command": "node \"${CLAUDE_PLUGIN_ROOT:-.}/hooks/silent-npx.cjs\" tsx \"${CLAUDE_PLUGIN_ROOT:-.}/scripts/l1_watch.ts\"",
+            "timeout": 15,
+            "async": true
+          }
+        ]
+      }
+    ],
+    "PreCompact": [
+      {
+        "matcher": "*",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node \"${CLAUDE_PLUGIN_ROOT:-.}/hooks/silent-npx.cjs\" tsx \"${CLAUDE_PLUGIN_ROOT:-.}/scripts/precompact_safety.ts\"",
+            "timeout": 25
           }
         ]
       }
