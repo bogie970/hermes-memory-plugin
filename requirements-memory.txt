@@ -1,0 +1,16 @@
+# Hermes Memory System — minimal dependencies
+# Only what's needed for the memory subsystem (not GPU rental, dashboard, etc.)
+
+# Vector store
+lancedb>=0.30.2
+pylance>=0.30.2
+pyarrow>=23.0.1
+
+# Embeddings
+sentence-transformers>=5.4.0
+
+# Schema
+pydantic>=2.10.0
+
+# Hybrid search
+rank-bm25>=0.2.2

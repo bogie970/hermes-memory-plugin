@@ -20,6 +20,7 @@
 import * as fs from 'fs';
 import * as path from 'path';
 import * as readline from 'readline';
+import { spawnSync } from 'child_process';
 import { getAgentId } from './agent_config.ts';
 import { buildLettaApiUrl } from './letta_api_url.ts';
 import {
@@ -39,9 +40,12 @@ import {
   getTempStateDir,
 } from './conversation_utils.ts';
 import { isLocalMode, getLocalAgent, consumeWhispers } from './local_store.ts';
+import { checkCompactionRisk, formatCompactionWarning } from './compaction_guard.ts';
+import { getConfig } from './config.ts';
 
-// Configuration
-const DEBUG = process.env.LETTA_DEBUG === '1';
+// Configuration — loaded from hermes.config.json, env vars, or defaults
+const hermesConfig = getConfig();
+const DEBUG = hermesConfig.debug;
 
 function debug(...args: unknown[]): void {
   if (DEBUG) {
@@ -292,6 +296,69 @@ ${escapedText}
 }
 
 /**
+ * Retrieve query-dependent memories from LanceDB vector store.
+ * Calls Python subprocess: memory.query_retrieve
+ *
+ * Returns XML string with retrieved memories, or empty string on failure.
+ * Graceful degradation: any error returns '' so the existing system continues.
+ */
+function retrieveMemories(prompt: string, cwd: string): string {
+  const pythonPath = hermesConfig.pythonPath;
+  const pluginRoot = path.resolve(__dirname, '..');
+  const pythonDir = path.join(pluginRoot, 'python');
+
+  // Skip trivially short prompts (single words, "y", "ok", etc.)
+  if (!prompt || prompt.trim().length < 5) {
+    debug('retrieveMemories: prompt too short, skipping');
+    return '';
+  }
+
+  // Truncate prompt to avoid Windows argv length limits (32k) and
+  // because embedding models only use first ~512 tokens anyway.
+  const truncatedPrompt = prompt.slice(0, 8000);
+
+  try {
+    const t0 = Date.now();
+    const result = spawnSync(
+      pythonPath,
+      ['-m', 'memory.query_retrieve', truncatedPrompt, '--k', '10', '--format', 'xml'],
+      {
+        cwd: pythonDir,
+        timeout: 15000,  // 15s timeout: cold start loads embedding model (~3-9s)
+        encoding: 'utf-8',
+        env: {
+          ...process.env,
+          PYTHONPATH: pythonDir,
+        },
+        windowsHide: true,
+      }
+    );
+    const elapsed = Date.now() - t0;
+
+    if (result.stderr) {
+      debug(`retrieveMemories stderr (${elapsed}ms):`, result.stderr.trim());
+    }
+
+    if (result.status !== 0) {
+      debug(`retrieveMemories: python exited with code ${result.status}`);
+      return '';
+    }
+
+    const output = (result.stdout || '').trim();
+    if (!output || output === '<retrieved_memories count="0"/>') {
+      debug(`retrieveMemories: no results (${elapsed}ms)`);
+      return '';
+    }
+
+    debug(`retrieveMemories: got results (${elapsed}ms), ${output.length} chars`);
+    return output;
+  } catch (err) {
+    debug('retrieveMemories error:', err);
+    return '';
+  }
+}
+
+/**
  * Main function
  */
 async function main(): Promise<void> {
@@ -385,10 +452,18 @@ async function main(): Promise<void> {
       }
     }
     
+    // Query-dependent retrieval: search L2 vector store for relevant memories
+    if (hookInput?.prompt) {
+      const retrievedXml = retrieveMemories(hookInput.prompt, cwd);
+      if (retrievedXml) {
+        outputs.push(retrievedXml);
+      }
+    }
+
     // Both modes: inject messages from Sub
     const messageOutput = formatMessagesForStdout(agent, newMessages);
     outputs.push(messageOutput);
-    
+
     // Add instruction to acknowledge messages if there are any
     if (newMessages.length > 0) {
       const agentName = agent.name || 'Subconscious';
@@ -409,6 +484,15 @@ async function main(): Promise<void> {
         outputs.push(formatted);
         const wCount = whispers.length === 1 ? '1 whisper' : `${whispers.length} whispers`;
         outputs.push(`<instruction>Your Subconscious sent ${wCount} above. These are one-time observations — acknowledge briefly inline, e.g. "Sub whispers: [key point]".</instruction>`);
+      }
+    }
+
+    // Compaction guard: check if background worker is falling behind
+    if (sessionId && hookInput?.transcript_path) {
+      const compactionStatus = checkCompactionRisk(cwd, sessionId, hookInput.transcript_path, debug);
+      const warning = formatCompactionWarning(compactionStatus);
+      if (warning) {
+        outputs.push(warning);
       }
     }
 

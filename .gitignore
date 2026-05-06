@@ -47,3 +47,10 @@ Thumbs.db
 .env.local
 .env.*.local
 poem_for_claude_code.md
+
+# Install-generated config (user-specific paths)
+hermes.config.json
+
+# Runtime data
+data/
+__pycache__/

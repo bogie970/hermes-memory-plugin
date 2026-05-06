@@ -42,6 +42,9 @@ import {
   formatAsXmlTranscript,
 } from './transcript_utils.ts';
 import { isLocalMode } from './local_store.ts';
+import { getConfig } from './config.ts';
+
+const hermesConfig = getConfig();
 
 // ESM-compatible __dirname
 const __filename = fileURLToPath(import.meta.url);
@@ -170,10 +173,11 @@ async function main(): Promise<void> {
 
     // ── LOCAL MODE: Spawn Python worker ──
     if (isLocalMode()) {
-      const hermesRoot = process.env.HERMES_ROOT;
-      if (!hermesRoot) {
-        log('ERROR: HERMES_ROOT not set — cannot spawn local worker');
-        console.error('Subconscious: HERMES_ROOT environment variable not set');
+      const pluginRoot = path.resolve(__dirname, '..');
+      const pythonDir = path.join(pluginRoot, 'python');
+      if (!fs.existsSync(path.join(pythonDir, 'memory'))) {
+        log('ERROR: python/memory/ not found — run install.ps1');
+        console.error('Subconscious: Python modules missing. Run the install script.');
         process.exit(1);
       }
 
@@ -194,14 +198,14 @@ async function main(): Promise<void> {
 
       // Spawn the Python bridge script
       const workerScript = path.join(__dirname, 'local_worker.py');
-      const pythonCmd = process.platform === 'win32' ? 'python' : 'python3';
+      const pythonCmd = hermesConfig.pythonPath;
 
-      const workerEnv = { ...process.env, HERMES_ROOT: hermesRoot };
+      const workerEnv = { ...process.env, PYTHONPATH: pythonDir };
 
       const child = spawn(pythonCmd, [workerScript, payloadFile], {
         detached: true,
         stdio: 'ignore',
-        cwd: hookInput.cwd,
+        cwd: pythonDir,
         env: workerEnv,
         windowsHide: true,
       });
