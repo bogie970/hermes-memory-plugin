@@ -86,19 +86,17 @@ function estimateTokens(transcriptPath: string): number {
 
 function spawnL1Manager(
   pythonPath: string,
-  hermesRoot: string,
+  pythonDir: string,
   transcriptPath: string,
   markerDir: string,
   sessionId: string,
 ): void {
-  const pythonDir = path.join(hermesRoot, 'aisys');
   const env = {
     ...process.env,
-    PYTHONPATH: `${pythonDir}${path.delimiter}${hermesRoot}`,
-    HERMES_ROOT: hermesRoot,
+    PYTHONPATH: pythonDir,
   };
   const child = spawn(pythonPath, [
-    '-m', 'aisys.memory.l1_manager_cli',
+    '-m', 'memory.l1_manager_cli',
     '--transcript', transcriptPath,
     '--marker-dir', markerDir,
     '--session-id', sessionId,
@@ -107,7 +105,7 @@ function spawnL1Manager(
   ], {
     detached: true,
     stdio: 'ignore',
-    cwd: hermesRoot,
+    cwd: pythonDir,
     env,
     windowsHide: true,
   });
@@ -146,13 +144,9 @@ async function main(): Promise<void> {
     process.exit(0);
   }
 
-  // Resolve hermes root: env > config file > sibling-of-plugin guess
+  // Plugin-bundled python tree (the canonical install)
   const cfg = getConfig();
-  const hermesRoot = (
-    process.env.HERMES_ROOT
-    || (cfg as any).hermesRoot
-    || path.resolve(path.dirname(__filename), '..', '..', 'hermes')
-  );
+  const pythonDir = (cfg as any).pythonDir || path.resolve(path.dirname(__filename), '..', 'python');
 
   const markerDir = getMarkerDir(hookInput.cwd);
   try {
@@ -165,7 +159,7 @@ async function main(): Promise<void> {
   try {
     spawnL1Manager(
       cfg.pythonPath,
-      hermesRoot,
+      pythonDir,
       hookInput.transcript_path,
       markerDir,
       hookInput.session_id,

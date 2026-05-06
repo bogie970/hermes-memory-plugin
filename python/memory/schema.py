@@ -56,9 +56,13 @@ class MemoryRecord(BaseModel):
         from memory.enrichment import build_enriched_text
         return build_enriched_text(self.content, enrichment)
 
-    def to_lance_dict(self, vector: list[float]) -> dict[str, Any]:
-        """Convert to a flat dict for LanceDB insertion."""
-        return {
+    def to_lance_dict(self, vector: list[float], include_v2: bool = True) -> dict[str, Any]:
+        """Convert to a flat dict for LanceDB insertion.
+
+        If include_v2=True (default), populates v2 schema fields with sensible
+        defaults. Set False only when targeting a v1 (pre-migration) table.
+        """
+        d = {
             "id": self.id,
             "content": self.content,
             "memory_type": self.memory_type.value,
@@ -76,6 +80,28 @@ class MemoryRecord(BaseModel):
             "archived": self.archived,
             "vector": vector,
         }
+        if include_v2:
+            now_iso = self.created_at.isoformat()
+            v2_defaults = self.metadata.get("_v2_overrides", {})
+            d.update({
+                "tier": v2_defaults.get("tier", "verified"),
+                "provenance": v2_defaults.get("provenance", "llm_inferred"),
+                "source_ref": v2_defaults.get("source_ref", "memory_store_insert"),
+                "writer": v2_defaults.get("writer", "manual"),
+                "confidence": v2_defaults.get("confidence", 0.5),
+                "valid_from": v2_defaults.get("valid_from", now_iso),
+                "valid_to": v2_defaults.get("valid_to", ""),
+                "supersedes": v2_defaults.get("supersedes", ""),
+                "superseded_by": v2_defaults.get("superseded_by", ""),
+                "contradiction_state": v2_defaults.get("contradiction_state", "clean"),
+                "conflict_with": v2_defaults.get("conflict_with", "[]"),
+                "seen_count": v2_defaults.get("seen_count", 1),
+                "last_seen_at": v2_defaults.get("last_seen_at", now_iso),
+                "promoted_at": v2_defaults.get("promoted_at", ""),
+                "embedding_model": v2_defaults.get("embedding_model", "gte-modernbert-base"),
+                "embedding_version": v2_defaults.get("embedding_version", 1),
+            })
+        return d
 
     @classmethod
     def from_lance_row(cls, row: dict[str, Any]) -> MemoryRecord:

@@ -160,13 +160,24 @@ function _markerDir(cwd: string): string {
   return path.join(os.homedir(), '.claude', 'projects', _sanitizeCwd(cwd), 'l1_markers');
 }
 
+// Strict marker filename pattern: only files written by our l1_manager.
+// Rejects any other .md file an attacker (or accidental drop) might place
+// in the marker dir.
+const MARKER_FILENAME_RE = /^l1_evicted_[0-9a-f]{8,32}\.md$/;
+const MARKER_MAX_BYTES = 64 * 1024;  // 64 KB hard cap per marker
+
 /**
- * Read and consume L1-evicted marker files. Renames consumed files
- * to .consumed-<ts>.md (don't delete — useful for postmortem).
+ * Read and consume L1-evicted marker files. Validates filename pattern
+ * strictly, bounds size, and wraps content in an explicit sandbox tag
+ * so the model treats it as data rather than instructions.
+ *
+ * Rejects: filenames not matching MARKER_FILENAME_RE, files >64KB,
+ * paths that escape the marker dir.
  */
 function consumeL1Markers(cwd: string): string[] {
   const dir = _markerDir(cwd);
   if (!fs.existsSync(dir)) return [];
+  const dirResolved = path.resolve(dir);
   const out: string[] = [];
   let entries: string[] = [];
   try {
@@ -175,11 +186,35 @@ function consumeL1Markers(cwd: string): string[] {
     return [];
   }
   for (const name of entries) {
-    if (!name.startsWith('l1_evicted_') || !name.endsWith('.md')) continue;
+    if (!MARKER_FILENAME_RE.test(name)) {
+      // Silently skip files that don't match our pattern (possibly an attack)
+      debug('marker rejected (bad name):', name);
+      continue;
+    }
     const full = path.join(dir, name);
+    // Defense-in-depth: ensure resolved path is still inside the marker dir
+    if (!path.resolve(full).startsWith(dirResolved + path.sep)) {
+      debug('marker rejected (path traversal):', name);
+      continue;
+    }
     try {
-      const content = fs.readFileSync(full, 'utf-8').trim();
-      if (content) out.push(content);
+      const stat = fs.statSync(full);
+      if (stat.size > MARKER_MAX_BYTES) {
+        debug('marker rejected (too large):', name, stat.size);
+        continue;
+      }
+      const raw = fs.readFileSync(full, 'utf-8');
+      // Escape any embedded XML so injected content cannot break out of
+      // the wrapper tag. The l1_manager output is already shaped, but
+      // user-controlled chunks could contain anything.
+      const escaped = raw
+        .replace(/&/g, '&amp;')
+        .replace(/</g, '&lt;')
+        .replace(/>/g, '&gt;');
+      const wrapped = `<l1_evicted_marker file="${name}">\n${escaped}\n</l1_evicted_marker>`;
+      out.push(wrapped);
+
+      // Move out of the active dir so the next run doesn't re-inject
       const consumed = full.replace(/\.md$/, `.consumed-${Date.now()}.md`);
       fs.renameSync(full, consumed);
     } catch (e) {

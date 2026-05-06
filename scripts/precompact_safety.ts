@@ -93,20 +93,18 @@ function hasRecentMarker(markerDir: string): boolean {
 
 function runSyncEviction(
   pythonPath: string,
-  hermesRoot: string,
+  pythonDir: string,
   transcriptPath: string,
   markerDir: string,
   sessionId: string,
 ): void {
-  const pythonDir = path.join(hermesRoot, 'aisys');
   const env = {
     ...process.env,
-    PYTHONPATH: `${pythonDir}${path.delimiter}${hermesRoot}`,
-    HERMES_ROOT: hermesRoot,
+    PYTHONPATH: pythonDir,
   };
   try {
     const result = spawnSync(pythonPath, [
-      '-m', 'aisys.memory.l1_manager_cli',
+      '-m', 'memory.l1_manager_cli',
       '--transcript', transcriptPath,
       '--marker-dir', markerDir,
       '--session-id', sessionId,
@@ -115,7 +113,7 @@ function runSyncEviction(
     ], {
       timeout: SYNC_TIMEOUT_MS,
       encoding: 'utf-8',
-      cwd: hermesRoot,
+      cwd: pythonDir,
       env,
       windowsHide: true,
     });
@@ -157,11 +155,7 @@ async function main(): Promise<void> {
   }
 
   const cfg = getConfig();
-  const hermesRoot = (
-    process.env.HERMES_ROOT
-    || (cfg as any).hermesRoot
-    || path.resolve(path.dirname(__filename), '..', '..', 'hermes')
-  );
+  const pythonDir = (cfg as any).pythonDir || path.resolve(path.dirname(__filename), '..', 'python');
 
   try {
     fs.mkdirSync(markerDir, { recursive: true });
@@ -172,7 +166,7 @@ async function main(): Promise<void> {
 
   runSyncEviction(
     cfg.pythonPath,
-    hermesRoot,
+    pythonDir,
     hookInput.transcript_path,
     markerDir,
     hookInput.session_id,

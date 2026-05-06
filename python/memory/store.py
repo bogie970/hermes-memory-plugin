@@ -51,6 +51,46 @@ LANCE_SCHEMA = pa.schema(
     ]
 )
 
+# v2 schema additions: provenance, tier, bitemporal, contradiction, embedding versioning.
+# Added by migrate_v2.backfill_v2() via LanceDB add_columns (metadata-only for new cols).
+# New v2 records via insert() should populate all these fields with defaults.
+V2_FIELDS = [
+    pa.field("tier", pa.utf8()),                        # candidate | probationary | verified | tombstoned
+    pa.field("provenance", pa.utf8()),                  # user_stated | llm_inferred | tool_observed | file_grounded
+    pa.field("source_ref", pa.utf8()),                  # transcript_id:turn | file:line | tool_call_id
+    pa.field("writer", pa.utf8()),                      # user | subconscious_haiku | sonnet_promoter | etc
+    pa.field("confidence", pa.float32()),               # 0.0 - 1.0
+    pa.field("valid_from", pa.utf8()),                  # ISO timestamp; bitemporal valid time
+    pa.field("valid_to", pa.utf8()),                    # ISO timestamp; "" = currently valid
+    pa.field("supersedes", pa.utf8()),                  # nullable id of replaced memory ("" = none)
+    pa.field("superseded_by", pa.utf8()),               # nullable id of replacing memory
+    pa.field("contradiction_state", pa.utf8()),         # clean | flagged_haiku | adjudicated | user_review
+    pa.field("conflict_with", pa.utf8()),               # JSON list of ids
+    pa.field("seen_count", pa.int32()),                 # re-encounter counter
+    pa.field("last_seen_at", pa.utf8()),                # ISO timestamp
+    pa.field("promoted_at", pa.utf8()),                 # ISO timestamp; "" = not yet promoted
+    pa.field("embedding_model", pa.utf8()),             # current model name
+    pa.field("embedding_version", pa.int32()),          # version number
+]
+
+LANCE_SCHEMA_V2 = pa.schema(list(LANCE_SCHEMA) + V2_FIELDS)
+
+# Audit log table — append-only, separate from memory table
+LANCE_AUDIT_SCHEMA = pa.schema(
+    [
+        pa.field("id", pa.utf8()),                      # UUID
+        pa.field("memory_id", pa.utf8()),               # references memory.id
+        pa.field("op", pa.utf8()),                      # create | update | promote | tombstone | supersede | backfill_v2
+        pa.field("who", pa.utf8()),                     # writer agent
+        pa.field("when", pa.utf8()),                    # ISO timestamp
+        pa.field("why", pa.utf8()),                     # reason / context
+        pa.field("before", pa.utf8()),                  # JSON snapshot before op (nullable)
+        pa.field("after", pa.utf8()),                   # JSON snapshot after op
+    ]
+)
+
+AUDIT_TABLE_NAME = "memory_audit"
+
 
 class MemoryStore:
     """LanceDB-backed memory store with embedding integration."""
@@ -72,6 +112,12 @@ class MemoryStore:
         except (FileNotFoundError, ValueError):
             return self._db.create_table(TABLE_NAME, schema=LANCE_SCHEMA)
 
+    def _has_v2_schema(self) -> bool:
+        """Check if the underlying table has v2 columns (post-migration)."""
+        v2_field_names = {f.name for f in V2_FIELDS}
+        schema_field_names = {f.name for f in self._table.schema}
+        return v2_field_names.issubset(schema_field_names)
+
     def insert(self, record: MemoryRecord, enrich: bool = True, evolve: bool = False) -> str:
         """Insert a single memory record. Returns the record ID.
 
@@ -92,7 +138,7 @@ class MemoryStore:
                 record.metadata["enrichment"] = enrichment
 
         vector = self._embedder.embed_one(embed_text)
-        row = record.to_lance_dict(vector)
+        row = record.to_lance_dict(vector, include_v2=self._has_v2_schema())
         with self._lock:
             self._table.add([row])
 
@@ -123,7 +169,8 @@ class MemoryStore:
                 embed_texts.append(r.content)
 
         vectors = self._embedder.embed(embed_texts)
-        rows = [r.to_lance_dict(v) for r, v in zip(records, vectors)]
+        include_v2 = self._has_v2_schema()
+        rows = [r.to_lance_dict(v, include_v2=include_v2) for r, v in zip(records, vectors)]
         with self._lock:
             self._table.add(rows)
         return [r.id for r in records]
@@ -345,3 +392,36 @@ class MemoryStore:
         if namespace:
             df = df[df["namespace"] == namespace]
         return [MemoryRecord.from_lance_row(row.to_dict()) for _, row in df.iterrows()]
+
+    # ---------- v2 schema helpers (Phase B+) ----------
+
+    def scan_v2(self) -> list[dict]:
+        """Return all rows as dicts including v2 fields. Used by migration tests."""
+        return self._table.to_pandas().to_dict(orient="records")
+
+    def list_tables(self) -> list[str]:
+        """Return list of LanceDB table names in this database."""
+        return list(self._db.table_names())
+
+    def audit_scan(self) -> list[dict]:
+        """Return all audit log entries. Returns empty list if audit table missing."""
+        try:
+            audit_table = self._db.open_table(AUDIT_TABLE_NAME)
+            return audit_table.to_pandas().to_dict(orient="records")
+        except (FileNotFoundError, ValueError):
+            return []
+
+    @property
+    def db(self):
+        """Expose the underlying LanceDB connection for migration scripts."""
+        return self._db
+
+    @property
+    def table(self):
+        """Expose the underlying LanceDB table for migration scripts."""
+        return self._table
+
+    @property
+    def lock(self):
+        """Expose the file lock for cross-module synchronized writes."""
+        return self._lock

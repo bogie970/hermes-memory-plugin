@@ -1,0 +1,42 @@
+# Default to text with auto-detection, normalize to LF in repo
+* text=auto eol=lf
+
+# Binary — never touch
+*.exe binary
+*.png binary
+*.jpg binary
+*.jpeg binary
+*.gif binary
+*.ico binary
+*.zip binary
+*.tar binary
+*.gz binary
+*.lance binary
+*.lock binary
+
+# Shell scripts must be LF (CRLF breaks shebangs)
+*.sh text eol=lf
+*.bash text eol=lf
+
+# PowerShell scripts CRLF (Windows convention)
+*.ps1 text eol=crlf
+*.psm1 text eol=crlf
+*.psd1 text eol=crlf
+
+# Source code: LF (works on all platforms)
+*.ts text eol=lf
+*.tsx text eol=lf
+*.js text eol=lf
+*.jsx text eol=lf
+*.cjs text eol=lf
+*.mjs text eol=lf
+*.py text eol=lf
+*.json text eol=lf
+*.md text eol=lf
+*.yml text eol=lf
+*.yaml text eol=lf
+*.toml text eol=lf
+
+# Generated / vendored — exclude from diffs
+package-lock.json -diff
+node_modules/** -diff -merge
