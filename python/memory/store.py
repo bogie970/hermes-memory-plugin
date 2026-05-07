@@ -402,9 +402,41 @@ class MemoryStore:
 
     # ---------- v2 schema helpers (Phase B+) ----------
 
-    def scan_v2(self) -> list[dict]:
-        """Return all rows as dicts including v2 fields. Used by migration tests."""
-        return self._table.to_pandas().to_dict(orient="records")
+    def scan_v2(self, columns: list[str] | None = None) -> list[dict]:
+        """Return all rows as dicts including v2 fields.
+
+        columns: if provided, materialize ONLY these columns. Excluding
+        the 'vector' column is the big win — it's 768 × float32 = ~3KB/row,
+        so on a 100k-row store skipping it saves ~300MB allocation.
+        Callers that only need to filter on tier/provenance/etc should
+        pass an explicit columns list.
+        """
+        if columns is None:
+            return self._table.to_pandas().to_dict(orient="records")
+        # LanceDB pyarrow path: select columns then to_pandas
+        try:
+            arrow = self._table.search().select(columns).to_arrow()
+            return arrow.to_pandas().to_dict(orient="records")
+        except Exception:
+            # Fallback: full scan and filter
+            df = self._table.to_pandas()
+            available = [c for c in columns if c in df.columns]
+            return df[available].to_dict(orient="records") if available else []
+
+    # Curated column subsets for callers that don't need the vector
+    SCAN_LEAN_COLUMNS = [
+        "id", "content", "tier", "provenance", "writer", "confidence",
+        "category", "tags", "session_id", "source_ref",
+        "created_at", "last_accessed", "last_seen_at", "promoted_at",
+        "valid_from", "valid_to", "supersedes", "superseded_by",
+        "contradiction_state", "conflict_with",
+        "seen_count", "access_count", "importance",
+        "embedding_model", "embedding_version", "archived",
+    ]
+
+    def scan_v2_lean(self) -> list[dict]:
+        """scan_v2 without the heavy vector column."""
+        return self.scan_v2(columns=self.SCAN_LEAN_COLUMNS)
 
     def list_tables(self) -> list[str]:
         """Return list of LanceDB table names in this database."""

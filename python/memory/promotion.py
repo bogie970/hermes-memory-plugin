@@ -103,72 +103,74 @@ def run_daily(
 
     result = PromotionResult()
 
-    # Acquire the store's file lock for the entire promotion run so
-    # concurrent invocations don't double-process the same candidates
-    # (which would burn API quota and produce duplicate audit entries).
+    # Snapshot eligible candidates under a brief lock — don't hold the
+    # store lock across slow Sonnet API calls (which can take seconds each)
+    # since that would starve concurrent write_memory calls from l1_watch.
     with store.lock:
-        rows = store.scan_v2()
+        rows = store.scan_v2_lean()
         candidates = [r for r in rows if _eligible_for_review(r)]
 
-        now_iso = datetime.now(timezone.utc).isoformat()
+    now_iso = datetime.now(timezone.utc).isoformat()
 
-        for row in candidates:
-            result.processed += 1
-            memory_id = row["id"]
-            prompt = ADJUDICATION_PROMPT.format(
-                id=memory_id,
-                confidence=row.get("confidence", 0.0),
-                seen_count=row.get("seen_count", 1),
-                content=row.get("content", ""),
+    for row in candidates:
+        result.processed += 1
+        memory_id = row["id"]
+        prompt = ADJUDICATION_PROMPT.format(
+            id=memory_id,
+            confidence=row.get("confidence", 0.0),
+            seen_count=row.get("seen_count", 1),
+            content=row.get("content", ""),
+        )
+
+        try:
+            response = chat_fn(
+                messages=[{"role": "user", "content": prompt}],
+                model=model,
+                timeout=30,
             )
+        except Exception:
+            result.errors += 1
+            continue
 
-            try:
-                response = chat_fn(
-                    messages=[{"role": "user", "content": prompt}],
-                    model=model,
-                    timeout=30,
-                )
-            except Exception:
-                result.errors += 1
-                continue
+        if response is None:
+            result.errors += 1
+            continue
 
-            if response is None:
-                result.errors += 1
-                continue
+        text = response.get("content", "").strip()
+        if text.startswith("```"):
+            text = text.split("```", 2)[1]
+            if text.startswith("json"):
+                text = text[4:]
+            text = text.strip()
+        try:
+            parsed = json.loads(text)
+        except (json.JSONDecodeError, TypeError):
+            result.errors += 1
+            continue
 
-            text = response.get("content", "").strip()
-            if text.startswith("```"):
-                text = text.split("```", 2)[1]
-                if text.startswith("json"):
-                    text = text[4:]
-                text = text.strip()
-            try:
-                parsed = json.loads(text)
-            except (json.JSONDecodeError, TypeError):
-                result.errors += 1
-                continue
+        verdict = parsed.get("verdict", "hold").lower()
+        rationale = parsed.get("rationale", "")[:200]
 
-            verdict = parsed.get("verdict", "hold").lower()
-            rationale = parsed.get("rationale", "")[:200]
-
-            if verdict == "promote":
-                # Already inside store.lock (outer with block)
+        if verdict == "promote":
+            # Acquire lock briefly. Where-clause guard prevents double-promote
+            # if a parallel promotion run already moved this row.
+            with store.lock:
                 store.table.update(
-                    where=f"id = '{memory_id}'",
+                    where=f"id = '{memory_id}' AND tier = 'candidate'",
                     values={"tier": "probationary", "promoted_at": now_iso},
                 )
-                _audit(store, memory_id=memory_id, op="promote",
-                       who="sonnet_promoter",
-                       why=f"sonnet verdict: {rationale}",
-                       before="candidate", after="probationary")
-                result.promoted += 1
-            elif verdict == "reject":
-                _audit(store, memory_id=memory_id, op="reject",
-                       who="sonnet_promoter",
-                       why=f"sonnet verdict: {rationale}",
-                       before="candidate", after="candidate")
-                result.rejected += 1
-            else:
-                result.held += 1
+            _audit(store, memory_id=memory_id, op="promote",
+                   who="sonnet_promoter",
+                   why=f"sonnet verdict: {rationale}",
+                   before="candidate", after="probationary")
+            result.promoted += 1
+        elif verdict == "reject":
+            _audit(store, memory_id=memory_id, op="reject",
+                   who="sonnet_promoter",
+                   why=f"sonnet verdict: {rationale}",
+                   before="candidate", after="candidate")
+            result.rejected += 1
+        else:
+            result.held += 1
 
     return result

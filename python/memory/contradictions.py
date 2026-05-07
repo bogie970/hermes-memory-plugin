@@ -62,27 +62,26 @@ def detect_candidates(
 ) -> list[dict]:
     """Find existing memories that might contradict the new content.
 
-    Uses cosine similarity on embeddings; returns rows above threshold.
+    Uses LanceDB native vector search (cosine distance). Considers only
+    verified/probationary tiers — candidates and tombstoned are excluded.
     """
     if not content:
         return []
 
     vector = store._embedder.embed_one(content)
-    rows = store.scan_v2()
-    candidates: list[tuple[float, dict]] = []
+    distance_threshold = 1.0 - threshold
 
-    for row in rows:
-        if row.get("tier") not in ("verified", "probationary"):
-            continue
-        row_vec = list(row["vector"]) if "vector" in row else None
-        if not row_vec:
-            continue
-        score = _cosine(vector, row_vec)
-        if score >= threshold:
-            candidates.append((score, row))
+    try:
+        results = (
+            store.table.search(vector)
+            .where("tier IN ('verified', 'probationary')")
+            .limit(k)
+            .to_list()
+        )
+    except Exception:
+        return []
 
-    candidates.sort(key=lambda x: x[0], reverse=True)
-    return [c[1] for c in candidates[:k]]
+    return [r for r in results if r.get("_distance", 1.0) <= distance_threshold]
 
 
 # ---- Sonnet adjudication ----

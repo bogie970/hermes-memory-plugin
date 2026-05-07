@@ -100,7 +100,7 @@ def tombstone_stale_candidates(store: MemoryStore, age_days: int = CANDIDATE_STA
     Does NOT tombstone candidates with seen_count > 1 (those are recurring and
     deserve more time to be promoted by Sonnet).
     """
-    rows = store.scan_v2()
+    rows = store.scan_v2_lean()
     cutoff_iso = _iso_days_ago(age_days)
     targets: list[str] = []
 
@@ -136,7 +136,7 @@ def purge_old_tombstoned(store: MemoryStore, age_days: int = TOMBSTONE_PURGE_DAY
 
     The audit log retains the create+tombstone ops as the historical record.
     """
-    rows = store.scan_v2()
+    rows = store.scan_v2_lean()
     cutoff_iso = _iso_days_ago(age_days)
     targets: list[str] = []
 
@@ -160,7 +160,7 @@ def purge_unused_l1_evict_candidates(store: MemoryStore, age_days: int = L1_EVIC
     never retrieved (access_count=0) AND haven't been promoted (still
     candidate) after the cutoff, they're noise.
     """
-    rows = store.scan_v2()
+    rows = store.scan_v2_lean()
     cutoff_iso = _iso_days_ago(age_days)
     targets: list[str] = []
 

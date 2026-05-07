@@ -27,6 +27,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent.parent))
 
 from memory.grounding import extract_code_refs, filesystem_exists
 from memory.schema import MemoryRecord, MemoryType
+from memory.secret_scrub import scrub_with_count
 from memory.store import AUDIT_TABLE_NAME, MemoryStore
 
 
@@ -94,25 +95,36 @@ def _assign_tier(writer: str, provenance: str) -> str:
 
 
 def _find_dedup_candidate(store: MemoryStore, vector: list[float]) -> dict | None:
-    """Cosine-search the store for a near-duplicate. Returns the row or None.
+    """Native LanceDB vector search for a near-duplicate. Returns the row or None.
 
     Considers verified/probationary/candidate tiers (excludes only tombstoned).
-    Including candidate prevents subconscious from spamming the same hallucination
-    as N separate candidate rows — instead, seen_count is bumped on the existing one.
+    Uses LanceDB's vector index (or linear scan for small stores) — drops
+    write-time dedup from O(N) Python cosine to ~O(log N) at scale.
+
+    Embeddings are L2-normalized (per EmbeddingService), so LanceDB's
+    default cosine distance == 1 - cos(theta). We threshold on distance.
     """
-    rows = store.scan_v2()
-    best: tuple[float, dict] | None = None
-    for row in rows:
-        if row.get("tier") == "tombstoned":
-            continue
-        row_vec = list(row["vector"]) if "vector" in row else None
-        if not row_vec:
-            continue
-        score = _cosine(vector, row_vec)
-        if score >= DEDUP_COSINE_THRESHOLD:
-            if best is None or score > best[0]:
-                best = (score, row)
-    return best[1] if best else None
+    distance_threshold = 1.0 - DEDUP_COSINE_THRESHOLD  # 0.08
+
+    try:
+        results = (
+            store.table.search(vector)
+            .where("tier != 'tombstoned'")
+            .limit(1)
+            .to_list()
+        )
+    except Exception:
+        # If the where-clause or search fails, fall back to no-dedup
+        # (write proceeds; duplicate may be caught later by cleanup).
+        return None
+
+    if not results:
+        return None
+    top = results[0]
+    distance = top.get("_distance", 1.0)
+    if distance > distance_threshold:
+        return None
+    return top
 
 
 def write_memory(
@@ -141,6 +153,10 @@ def write_memory(
     if writer not in KNOWN_WRITERS:
         # We allow unknown writers but they default to probationary
         pass
+
+    # 1a. Scrub credentials before they hit L2 — pasted API keys / tokens
+    #     would otherwise resurface via retrieval months later.
+    content, secrets_redacted = scrub_with_count(content)
 
     # 2. Tier assignment
     tier = _assign_tier(writer, provenance)
@@ -215,8 +231,10 @@ def write_memory(
 
     _audit(
         store, memory_id=rec.id, op="create", who=writer,
-        why=f"new memory at tier={tier} from {source_ref}",
-        after=json.dumps({"tier": tier, "provenance": provenance, "writer": writer}),
+        why=f"new memory at tier={tier} from {source_ref}"
+            + (f" (scrubbed {secrets_redacted} secrets)" if secrets_redacted else ""),
+        after=json.dumps({"tier": tier, "provenance": provenance, "writer": writer,
+                          "secrets_redacted": secrets_redacted}),
     )
 
     return rec.id
