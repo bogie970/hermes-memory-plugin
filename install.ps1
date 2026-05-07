@@ -99,7 +99,11 @@ $modelScript = @"
 import sys
 try:
     from sentence_transformers import SentenceTransformer
-    model = SentenceTransformer('Alibaba-NLP/gte-modernbert-base')
+    # Pinned revision — keep in sync with python/memory/embeddings.py
+    model = SentenceTransformer(
+        'Alibaba-NLP/gte-modernbert-base',
+        revision='e7f32e3c00f91d699e8c43b53106206bcc72bb22',
+    )
     result = model.encode(['test'])
     print(f'OK: model loaded, embedding dim={len(result[0])}')
 except Exception as e:

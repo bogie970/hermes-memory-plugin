@@ -66,7 +66,11 @@ ok "Python dependencies installed"
 step "Pre-downloading embedding model (~500MB first time)"
 "$VENV_PYTHON" -c "
 from sentence_transformers import SentenceTransformer
-m = SentenceTransformer('Alibaba-NLP/gte-modernbert-base')
+# Pinned revision — keep in sync with python/memory/embeddings.py
+m = SentenceTransformer(
+    'Alibaba-NLP/gte-modernbert-base',
+    revision='e7f32e3c00f91d699e8c43b53106206bcc72bb22',
+)
 r = m.encode(['test'])
 print(f'OK: model loaded, embedding dim={len(r[0])}')
 " || warn "Model download failed — will download on first use"

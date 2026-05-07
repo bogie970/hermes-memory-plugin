@@ -16,6 +16,7 @@ import {
   getMode,
   getTempStateDir,
   expandPath,
+  readBoundedStdinJson,
 } from './conversation_utils.ts';
 import { getLocalConversationId } from './local_store.ts';
 
@@ -59,24 +60,9 @@ function log(message: string): void {
 }
 
 async function readHookInput(): Promise<HookInput> {
-  return new Promise((resolve, reject) => {
-    let data = '';
-    process.stdin.setEncoding('utf8');
-    process.stdin.on('readable', () => {
-      let chunk;
-      while ((chunk = process.stdin.read()) !== null) {
-        data += chunk;
-      }
-    });
-    process.stdin.on('end', () => {
-      try {
-        resolve(JSON.parse(data));
-      } catch (e) {
-        reject(new Error(`Failed to parse hook input: ${e}`));
-      }
-    });
-    process.stdin.on('error', reject);
-  });
+  const v = await readBoundedStdinJson<HookInput>(2000);
+  if (!v) throw new Error('empty or oversized stdin');
+  return v;
 }
 
 function saveSessionState(cwd: string, sessionId: string, conversationId: string): void {
@@ -101,17 +87,27 @@ async function main(): Promise<void> {
     process.exit(0);
   }
 
-  // Banner: Unix uses /dev/tty, Windows uses stderr
+  // Banner: Unix uses /dev/tty, Windows uses stderr.
+  // Use openSync probe so we synchronously know whether /dev/tty exists
+  // and is writable — avoids the createWriteStream async error race.
   let tty: { write(s: string): boolean; end?(): void } | null = null;
   if (process.platform === 'win32') {
     tty = process.stderr;
   } else {
+    let fd: number | null = null;
     try {
-      const stream = fs.createWriteStream('/dev/tty');
-      stream.on('error', () => { tty = null; });
-      tty = stream;
+      fd = fs.openSync('/dev/tty', 'w');
     } catch {
-      // TTY not available
+      fd = null;
+    }
+    if (fd !== null) {
+      const closedFd = fd;
+      tty = {
+        write: (s: string) => {
+          try { fs.writeSync(closedFd, s); return true; } catch { return false; }
+        },
+        end: () => { try { fs.closeSync(closedFd); } catch {} },
+      };
     }
   }
 

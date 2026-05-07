@@ -24,14 +24,18 @@ export const LETTA_SECTION_END = '</letta>';
 export type LettaMode = 'whisper' | 'full' | 'off';
 
 /**
- * Get the current operating mode from LETTA_MODE env var.
+ * Get the current operating mode.
+ *
+ * Reads HERMES_MODE first; falls back to LETTA_MODE for backward
+ * compatibility with users whose settings.json still has the old name.
+ *
  * - whisper (default): Only inject pattern-block diffs and whispers
  * - full: Inject full pattern blocks + whispers
  * - off: Disable all hooks
  */
 export function getMode(): LettaMode {
-  const mode = process.env.LETTA_MODE?.trim().toLowerCase();
-  if (mode === 'full' || mode === 'off') return mode;
+  const raw = (process.env.HERMES_MODE ?? process.env.LETTA_MODE)?.trim().toLowerCase();
+  if (raw === 'full' || raw === 'off') return raw;
   return 'whisper';
 }
 
@@ -251,6 +255,90 @@ export function cleanLettaFromClaudeMd(projectDir: string): void {
 }
 
 // ============================================
+// Bounded stdin reader (DoS prevention)
+// ============================================
+
+const STDIN_MAX_BYTES = 4 * 1024 * 1024;  // 4 MB hard cap
+
+/**
+ * Read hook input JSON from stdin with a size cap.
+ *
+ * Hook payloads from Claude Code are normally <100 KB; the 4 MB cap is
+ * generous headroom while preventing OOM if a malicious or buggy upstream
+ * floods stdin. Raises if exceeded.
+ */
+export async function readBoundedStdinJson<T = unknown>(timeoutMs = 1500): Promise<T | null> {
+  return new Promise((resolve, reject) => {
+    let bytes = 0;
+    const chunks: Buffer[] = [];
+    let resolved = false;
+
+    const finish = (value: T | null, err?: Error) => {
+      if (resolved) return;
+      resolved = true;
+      clearTimeout(timer);
+      if (err) reject(err); else resolve(value);
+    };
+
+    const timer = setTimeout(() => finish(null), timeoutMs);
+
+    process.stdin.on('data', (chunk: Buffer) => {
+      bytes += chunk.length;
+      if (bytes > STDIN_MAX_BYTES) {
+        finish(null, new Error(`stdin exceeded ${STDIN_MAX_BYTES} bytes`));
+        try { process.stdin.destroy(); } catch {}
+        return;
+      }
+      chunks.push(chunk);
+    });
+    process.stdin.on('end', () => {
+      const data = Buffer.concat(chunks).toString('utf-8').trim();
+      if (!data) return finish(null);
+      try {
+        finish(JSON.parse(data) as T);
+      } catch (e) {
+        finish(null);
+      }
+    });
+    process.stdin.on('error', (e) => finish(null, e as Error));
+  });
+}
+
+// ============================================
+// Subprocess env allowlist
+// ============================================
+
+/**
+ * Build a minimal env for Python subprocesses.
+ *
+ * Inherits ONLY the vars the worker actually needs. Prevents leakage of
+ * ANTHROPIC_API_KEY, GMAIL_APP_PASSWORD, AWS_*, GITHUB_TOKEN, etc. into
+ * subprocesses that have no business seeing them.
+ *
+ * The claude-cli binary, when invoked from the Python worker, uses the
+ * user's Max plan auth that lives outside env vars — so dropping the
+ * API key from the subprocess env does not break Haiku invocations.
+ */
+export function buildPythonSubprocessEnv(extra: Record<string, string> = {}): Record<string, string> {
+  const env: Record<string, string> = {};
+  // Required path vars
+  for (const key of ['PATH', 'HOME', 'USERPROFILE', 'TEMP', 'TMP', 'TMPDIR',
+                       'APPDATA', 'LOCALAPPDATA', 'PROGRAMFILES', 'SYSTEMROOT',
+                       'LANG', 'LC_ALL', 'LC_CTYPE', 'PYTHONIOENCODING']) {
+    const v = process.env[key];
+    if (v !== undefined) env[key] = v;
+  }
+  // Hermes-specific configuration (data dirs, mode, debug)
+  for (const [k, v] of Object.entries(process.env)) {
+    if (k.startsWith('HERMES_') || k.startsWith('LETTA_') || k.startsWith('HF_')) {
+      if (v !== undefined) env[k] = v;
+    }
+  }
+  // Caller-specified additions (always win)
+  return { ...env, ...extra };
+}
+
+// ============================================
 // Silent Worker Spawning
 // ============================================
 
@@ -311,14 +399,14 @@ export function spawnSilentWorker(
         detached: true,
         stdio: 'ignore',
         cwd,
-        env: process.env,
+        env: buildPythonSubprocessEnv(),
       });
     } else {
       child = spawn(NPX_CMD, ['tsx', workerScript, payloadFile], {
         detached: true,
         stdio: 'ignore',
         cwd,
-        env: process.env,
+        env: buildPythonSubprocessEnv(),
       });
     }
   }

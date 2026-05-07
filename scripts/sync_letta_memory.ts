@@ -17,6 +17,7 @@ import * as readline from 'readline';
 import { spawnSync } from 'child_process';
 import { fileURLToPath } from 'url';
 import {
+  buildPythonSubprocessEnv,
   loadSyncState,
   saveSyncState,
   SyncState,
@@ -249,10 +250,7 @@ function retrieveMemories(prompt: string, cwd: string): string {
         cwd: pythonDir,
         timeout: 15000,
         encoding: 'utf-8',
-        env: {
-          ...process.env,
-          PYTHONPATH: pythonDir,
-        },
+        env: buildPythonSubprocessEnv({ PYTHONPATH: pythonDir }),
         windowsHide: true,
       }
     );

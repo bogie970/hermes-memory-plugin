@@ -71,10 +71,18 @@ export function getConfig(): HermesConfig {
     pythonPath = fs.existsSync(venvPython) ? venvPython : 'python';
   }
 
-  const modeRaw = ((file.mode as string) || process.env.LETTA_MODE || 'full').trim().toLowerCase();
+  const modeRaw = (
+    (file.mode as string)
+    || process.env.HERMES_MODE
+    || process.env.LETTA_MODE
+    || 'full'
+  ).trim().toLowerCase();
   const mode = (modeRaw === 'full' || modeRaw === 'whisper' || modeRaw === 'off') ? modeRaw : 'full';
 
-  const debug = (file.debug as boolean) || process.env.LETTA_DEBUG === '1' || false;
+  const debug = (file.debug as boolean)
+    || process.env.HERMES_DEBUG === '1'
+    || process.env.LETTA_DEBUG === '1'
+    || false;
 
   _cached = {
     dataDir,

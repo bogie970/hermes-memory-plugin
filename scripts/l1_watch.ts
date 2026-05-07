@@ -12,7 +12,7 @@ import * as path from 'path';
 import { spawn } from 'child_process';
 import { fileURLToPath } from 'url';
 import { readTranscript } from './transcript_utils.ts';
-import { getMode, getTempStateDir } from './conversation_utils.ts';
+import { buildPythonSubprocessEnv, getMode, getTempStateDir, readBoundedStdinJson } from './conversation_utils.ts';
 import { getConfig } from './config.ts';
 
 const __filename = fileURLToPath(import.meta.url);
@@ -47,24 +47,9 @@ function log(msg: string): void {
 }
 
 async function readHookInput(): Promise<HookInput> {
-  return new Promise((resolve, reject) => {
-    let data = '';
-    process.stdin.setEncoding('utf8');
-    process.stdin.on('readable', () => {
-      let chunk;
-      while ((chunk = process.stdin.read()) !== null) {
-        data += chunk;
-      }
-    });
-    process.stdin.on('end', () => {
-      try {
-        resolve(JSON.parse(data));
-      } catch (e) {
-        reject(new Error(`Failed to parse stdin: ${e}`));
-      }
-    });
-    process.stdin.on('error', reject);
-  });
+  const v = await readBoundedStdinJson<HookInput>(2000);
+  if (!v) throw new Error('empty or oversized stdin');
+  return v;
 }
 
 function sanitizeCwd(cwd: string): string {
@@ -91,10 +76,7 @@ function spawnL1Manager(
   markerDir: string,
   sessionId: string,
 ): void {
-  const env = {
-    ...process.env,
-    PYTHONPATH: pythonDir,
-  };
+  const env = buildPythonSubprocessEnv({ PYTHONPATH: pythonDir });
   const child = spawn(pythonPath, [
     '-m', 'memory.l1_manager_cli',
     '--transcript', transcriptPath,

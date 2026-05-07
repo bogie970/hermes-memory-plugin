@@ -11,6 +11,13 @@ import threading
 from memory.config import EMBEDDING_MODEL, EMBEDDING_DEVICE
 
 
+# Pinned commit on Alibaba-NLP/gte-modernbert-base to prevent silent
+# model swap if the upstream HF repo changes (or is compromised).
+# Update this SHA when intentionally upgrading; re-embedding pipeline
+# in migrate_embeddings.py handles the schema migration.
+EMBEDDING_REVISION = "e7f32e3c00f91d699e8c43b53106206bcc72bb22"
+
+
 class EmbeddingService:
     """Lazy-loaded sentence transformer for CPU-only embedding."""
 
@@ -18,10 +25,12 @@ class EmbeddingService:
         self,
         model_name: str = EMBEDDING_MODEL,
         device: str = EMBEDDING_DEVICE,
+        revision: str = EMBEDDING_REVISION,
     ):
         self._model = None
         self._model_name = model_name
         self._device = device
+        self._revision = revision
         self._lock = threading.Lock()
 
     def _load(self):
@@ -30,7 +39,11 @@ class EmbeddingService:
                 if self._model is None:
                     from sentence_transformers import SentenceTransformer
 
-                    self._model = SentenceTransformer(self._model_name, device=self._device)
+                    self._model = SentenceTransformer(
+                        self._model_name,
+                        device=self._device,
+                        revision=self._revision,
+                    )
 
     def embed(self, texts: list[str]) -> list[list[float]]:
         """Embed a batch of texts. Returns normalized vectors."""

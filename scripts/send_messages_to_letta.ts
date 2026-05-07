@@ -16,11 +16,13 @@ import * as path from 'path';
 import { spawn } from 'child_process';
 import { fileURLToPath } from 'url';
 import {
+  buildPythonSubprocessEnv,
   loadSyncState,
   saveSyncState,
   getSyncStateFile,
   getMode,
   getTempStateDir,
+  readBoundedStdinJson,
 } from './conversation_utils.ts';
 import {
   readTranscript,
@@ -59,24 +61,9 @@ function log(message: string): void {
 }
 
 async function readHookInput(): Promise<HookInput> {
-  return new Promise((resolve, reject) => {
-    let data = '';
-    process.stdin.setEncoding('utf8');
-    process.stdin.on('readable', () => {
-      let chunk;
-      while ((chunk = process.stdin.read()) !== null) {
-        data += chunk;
-      }
-    });
-    process.stdin.on('end', () => {
-      try {
-        resolve(JSON.parse(data));
-      } catch (e) {
-        reject(new Error(`Failed to parse hook input: ${e}`));
-      }
-    });
-    process.stdin.on('error', reject);
-  });
+  const v = await readBoundedStdinJson<HookInput>(2000);
+  if (!v) throw new Error('empty or oversized stdin');
+  return v;
 }
 
 async function main(): Promise<void> {
@@ -152,7 +139,7 @@ async function main(): Promise<void> {
     const workerScript = path.join(__dirname, 'local_worker.py');
     const pythonCmd = hermesConfig.pythonPath;
 
-    const workerEnv = { ...process.env, PYTHONPATH: pythonDir };
+    const workerEnv = buildPythonSubprocessEnv({ PYTHONPATH: pythonDir });
 
     const child = spawn(pythonCmd, [workerScript, payloadFile], {
       detached: true,

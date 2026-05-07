@@ -53,12 +53,22 @@ moved and how to retrieve it.
 
 ## Install
 
+**Windows (PowerShell):**
+
+```powershell
+git clone https://github.com/bogie970/hermes-memory-plugin
+cd hermes-memory-plugin
+# If PowerShell blocks unsigned scripts:
+Set-ExecutionPolicy -Scope Process Bypass
+.\install.ps1
+```
+
+**macOS / Linux:**
+
 ```bash
 git clone https://github.com/bogie970/hermes-memory-plugin
 cd hermes-memory-plugin
-./install.ps1   # Windows PowerShell
-# or
-./install.sh    # macOS / Linux
+./install.sh
 ```
 
 The installer:
@@ -107,7 +117,7 @@ Tunable via env or `hermes.config.json`:
 | `HERMES_L1_EVICT_FRACTION` | 0.5 | How much to evict (oldest fraction) |
 | `HERMES_L1_PIN_RECENT` | 20 | Turns exempt from eviction |
 | `HERMES_L1_CONTEXT_LIMIT` | 200000 | Context window size |
-| `LETTA_MODE` | full | `full` / `whisper` / `off` |
+| `HERMES_MODE` | full | `full` / `whisper` / `off` (also accepts legacy `LETTA_MODE`) |
 
 ## Development
 
