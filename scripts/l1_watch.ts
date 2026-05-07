@@ -23,6 +23,9 @@ const TRIGGER_FRACTION = parseFloat(process.env.HERMES_L1_TRIGGER_FRACTION ?? '0
 const EVICT_FRACTION = parseFloat(process.env.HERMES_L1_EVICT_FRACTION ?? '0.5');
 const PIN_RECENT = parseInt(process.env.HERMES_L1_PIN_RECENT ?? '20');
 const CHARS_PER_TOKEN = 3.5;
+// Cooldown after a successful eviction. Prevents firing Haiku on every Stop
+// hook while transcript stays past the 60% mark.
+const COOLDOWN_MS = parseInt(process.env.HERMES_L1_COOLDOWN_MS ?? '300000');  // 5 min
 
 const TEMP_STATE_DIR = getTempStateDir();
 const LOG_FILE = path.join(TEMP_STATE_DIR, 'l1_watch.log');
@@ -58,6 +61,26 @@ function sanitizeCwd(cwd: string): string {
 
 function getMarkerDir(cwd: string): string {
   return path.join(os.homedir(), '.claude', 'projects', sanitizeCwd(cwd), 'l1_markers');
+}
+
+/**
+ * Returns true if a marker file in the dir was written within COOLDOWN_MS.
+ * Markers (active or .consumed-*) count — we just want to know "did an
+ * eviction happen recently."
+ */
+function recentEviction(markerDir: string, cooldownMs: number): boolean {
+  if (!fs.existsSync(markerDir)) return false;
+  const cutoff = Date.now() - cooldownMs;
+  try {
+    for (const name of fs.readdirSync(markerDir)) {
+      if (!name.startsWith('l1_evicted_')) continue;
+      const stat = fs.statSync(path.join(markerDir, name));
+      if (stat.mtimeMs >= cutoff) return true;
+    }
+  } catch {
+    // ignore — fall through
+  }
+  return false;
 }
 
 function estimateTokens(transcriptPath: string): number {
@@ -135,6 +158,13 @@ async function main(): Promise<void> {
     fs.mkdirSync(markerDir, { recursive: true });
   } catch (e) {
     log(`mkdir markerDir failed: ${e}`);
+    process.exit(0);
+  }
+
+  // Cooldown: don't re-fire if we evicted within the cooldown window.
+  // Prevents Stop-hook hammering when transcript stays past 60% of context.
+  if (recentEviction(markerDir, COOLDOWN_MS)) {
+    log(`recent eviction within ${COOLDOWN_MS}ms — skipping`);
     process.exit(0);
   }
 

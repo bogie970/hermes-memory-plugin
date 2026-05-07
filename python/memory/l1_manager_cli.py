@@ -1,7 +1,7 @@
 """CLI wrapper for memory.l1_manager.evict — invoked by TS hooks.
 
 Usage:
-    python -m memory.l1_manager_cli \
+    python -m aisys.memory.l1_manager_cli \
         --transcript /path/to/session.jsonl \
         --marker-dir /path/to/markers \
         --session-id abc123 \
@@ -83,17 +83,41 @@ def main() -> int:
 
     # Lazy import — hermes paths may not be wired up at module-load time
     sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent.parent.parent))
-    from memory import l1_manager
-    from memory.embeddings import EmbeddingService
-    from memory.store import MemoryStore
+    from aisys.memory import l1_manager
+    from aisys.memory.embeddings import EmbeddingService
+    from aisys.memory.store import MemoryStore
 
+    # Acquire eviction mutex per marker dir (one in-flight eviction per
+    # project at a time). Prevents the race where two Stop hooks in quick
+    # succession both spawn detached evictors.
+    marker_dir = pathlib.Path(args.marker_dir)
+    marker_dir.mkdir(parents=True, exist_ok=True)
+    lock_path = marker_dir / ".l1_evict.lock"
+    try:
+        from filelock import FileLock, Timeout
+    except ImportError:
+        # filelock not available — fall through, accept the race
+        FileLock = None  # type: ignore
+        Timeout = Exception  # type: ignore
+
+    if FileLock is not None:
+        try:
+            with FileLock(str(lock_path), timeout=1):
+                return _run_eviction(args, marker_dir, l1_manager,
+                                       EmbeddingService, MemoryStore)
+        except Timeout:
+            print(json.dumps({"skipped": "another_eviction_in_progress"}))
+            return 0
+    else:
+        return _run_eviction(args, marker_dir, l1_manager,
+                              EmbeddingService, MemoryStore)
+
+
+def _run_eviction(args, marker_dir, l1_manager, EmbeddingService, MemoryStore) -> int:
     transcript = load_transcript_jsonl(args.transcript)
     if not transcript:
         print(json.dumps({"skipped": "transcript_empty_or_missing"}))
         return 0
-
-    marker_dir = pathlib.Path(args.marker_dir)
-    marker_dir.mkdir(parents=True, exist_ok=True)
 
     # Production store path (lives in hermes/data/memory_store)
     store = MemoryStore(embedder=EmbeddingService())

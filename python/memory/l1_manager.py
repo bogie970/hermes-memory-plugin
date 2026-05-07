@@ -327,11 +327,14 @@ def evict(
         except Exception:
             continue
 
-    # 5. Write marker file
+    # 5. Write marker file. Filename includes a sanitized session prefix so
+    #    parallel Claude sessions in the same cwd don't cross-pollinate.
     marker_path: Path | None = None
     if marker_dir is not None:
         marker_dir.mkdir(parents=True, exist_ok=True)
-        marker_path = marker_dir / f"l1_evicted_{block_id}.md"
+        # session_id may be a UUID or arbitrary string; sanitize hard
+        safe_session = "".join(c for c in session_id if c.isalnum() or c in "-_")[:32]
+        marker_path = marker_dir / f"l1_evicted_{safe_session}_{block_id}.md"
         marker_text = _format_marker(
             block_id=block_id,
             cut_index=cut_index,

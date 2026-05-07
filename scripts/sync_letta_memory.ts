@@ -162,9 +162,11 @@ function _markerDir(cwd: string): string {
 }
 
 // Strict marker filename pattern: only files written by our l1_manager.
+// Format: l1_evicted_<session_prefix>_<block_id_hex>.md (per-session isolation)
+// or legacy: l1_evicted_<block_id_hex>.md (backward compat).
 // Rejects any other .md file an attacker (or accidental drop) might place
 // in the marker dir.
-const MARKER_FILENAME_RE = /^l1_evicted_[0-9a-f]{8,32}\.md$/;
+const MARKER_FILENAME_RE = /^l1_evicted_(?:[\w\-]{1,32}_)?[0-9a-f]{8,32}\.md$/;
 const MARKER_MAX_BYTES = 64 * 1024;  // 64 KB hard cap per marker
 
 /**

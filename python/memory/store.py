@@ -103,8 +103,15 @@ class MemoryStore:
         os.makedirs(db_path, exist_ok=True)
         self._db = lancedb.connect(db_path)
         self._embedder = embedder or EmbeddingService()
-        self._lock = FileLock(f"{db_path}.lock", timeout=30)
+        self._lock = FileLock(f"{db_path}.lock", timeout=60)
         self._table = self._get_or_create_table()
+        self._ensure_audit_table()
+
+    def _ensure_audit_table(self):
+        """Create memory_audit table eagerly. Prevents lazy-create race
+        between concurrent _audit() calls."""
+        if AUDIT_TABLE_NAME not in list(self._db.table_names()):
+            self._db.create_table(AUDIT_TABLE_NAME, schema=LANCE_AUDIT_SCHEMA)
 
     def _get_or_create_table(self):
         try:
