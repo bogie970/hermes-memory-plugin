@@ -20,10 +20,10 @@ def main() -> int:
     args = ap.parse_args()
 
     sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent.parent.parent))
-    from memory import promotion
-    from memory.embeddings import EmbeddingService
-    from memory.maintenance_log import log_run
-    from memory.store import MemoryStore
+    from aisys.memory import promotion
+    from aisys.memory.embeddings import EmbeddingService
+    from aisys.memory.maintenance_log import log_run
+    from aisys.memory.store import MemoryStore
 
     store = MemoryStore(embedder=EmbeddingService())
 
@@ -48,6 +48,12 @@ def main() -> int:
     except Exception as e:
         error = str(e)[:300]
         summary = {}
+        # Also record to error sentinel for /memory-stats surfacing
+        try:
+            from aisys.memory.error_sentinel import record_error
+            record_error(source="promotion_cli", error=error, context=f"model={args.model}")
+        except Exception:
+            pass
     duration = time.monotonic() - t0
 
     log_run(job="sonnet_daily", duration_s=duration, summary=summary, error=error)

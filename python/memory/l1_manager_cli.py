@@ -132,6 +132,17 @@ def _run_eviction(args, marker_dir, l1_manager, EmbeddingService, MemoryStore) -
             session_id=args.session_id,
         )
     except Exception as e:
+        # Record to error sentinel so /memory-stats can surface it.
+        # TS hook still exits 0 — we never break the user's session.
+        try:
+            from memory.error_sentinel import record_error
+            record_error(
+                source="l1_manager_cli",
+                error=str(e)[:500],
+                context=f"session={args.session_id}",
+            )
+        except Exception:
+            pass
         print(json.dumps({"error": str(e)[:300]}), file=sys.stderr)
         return 0  # never bubble up — TS hook stays clean
 
