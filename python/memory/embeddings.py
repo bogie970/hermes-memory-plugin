@@ -1,11 +1,15 @@
 """Embedding service for the memory system.
 
-Uses sentence-transformers with CPU-only inference to avoid
-conflicting with GPU rentals. Model is lazy-loaded on first use.
+Uses sentence-transformers with CPU-only inference to avoid conflicting
+with GPU rentals. Tries the embedding daemon first to skip the ~25-second
+cold load; falls back to in-process load if the daemon is unreachable.
+
+Set HERMES_EMBED_DAEMON=0 to disable daemon entirely (always in-process).
 """
 
 from __future__ import annotations
 
+import os
 import threading
 
 from memory.config import EMBEDDING_MODEL, EMBEDDING_DEVICE
@@ -42,6 +46,9 @@ class EmbeddingService:
         self._device = device
         self._revision = revision
         self._lock = threading.Lock()
+        # Daemon client — lazy-initialized
+        self._daemon_client = None
+        self._daemon_disabled = os.environ.get("HERMES_EMBED_DAEMON", "1") == "0"
 
     def _load(self):
         global _SHARED_MODEL, _SHARED_MODEL_KEY
@@ -65,8 +72,34 @@ class EmbeddingService:
                 _SHARED_MODEL = self._model
                 _SHARED_MODEL_KEY = key
 
+    def _try_daemon(self, texts: list[str]) -> list[list[float]] | None:
+        """Try the embedding daemon. Returns None on any failure (caller
+        should fall back to in-process load)."""
+        if self._daemon_disabled:
+            return None
+        try:
+            if self._daemon_client is None:
+                from memory.embed_client import DaemonClient
+                self._daemon_client = DaemonClient()
+            return self._daemon_client.embed(texts)
+        except Exception:
+            # On any failure, disable daemon for the rest of THIS process
+            # to avoid thrashing retries. A fresh process will try again.
+            self._daemon_disabled = True
+            return None
+
     def embed(self, texts: list[str]) -> list[list[float]]:
-        """Embed a batch of texts. Returns normalized vectors."""
+        """Embed a batch of texts. Returns normalized vectors.
+
+        Tries the embedding daemon first (skip cold load); falls back to
+        in-process model load if the daemon is unreachable.
+        """
+        if not texts:
+            return []
+        result = self._try_daemon(texts)
+        if result is not None:
+            return result
+        # Fallback: in-process load (the old path)
         self._load()
         return self._model.encode(
             texts, normalize_embeddings=True, show_progress_bar=False

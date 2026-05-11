@@ -277,6 +277,7 @@ class CleanupResult:
     rotated_maintenance_log: bool = False
     compact_info: dict[str, Any] | None = None
     cleanup_versions_info: dict[str, Any] | None = None
+    vector_index_info: dict[str, Any] | None = None
     error: str | None = None
 
     def to_dict(self) -> dict[str, Any]:
@@ -289,6 +290,7 @@ class CleanupResult:
             "rotated_maintenance_log": self.rotated_maintenance_log,
             "compact_info": self.compact_info,
             "cleanup_versions_info": self.cleanup_versions_info,
+            "vector_index_info": self.vector_index_info,
             "error": self.error,
         }
 
@@ -321,6 +323,10 @@ def run_weekly_cleanup(store: MemoryStore) -> dict[str, Any]:
         # Lance cleanup (last so tier deletions get compacted away)
         result.cleanup_versions_info = cleanup_old_lance_versions(store)
         result.compact_info = compact_lance(store)
+
+        # Build/refresh vector index if corpus crossed threshold
+        from memory.vector_index import ensure_vector_index
+        result.vector_index_info = ensure_vector_index(store)
 
     except Exception as e:
         result.error = str(e)[:300]
