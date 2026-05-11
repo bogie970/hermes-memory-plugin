@@ -37,10 +37,17 @@ if (args[0] === 'tsx') {
   });
   const tsxCli = path.join(pluginRoot, 'node_modules', 'tsx', 'dist', 'cli.mjs');
 
+  // If stdin is piped (has data), skip silent-launcher.exe — its PseudoConsole
+  // (ConPTY) intercepts stdin and never delivers it to the child. All Claude
+  // Code hooks pipe JSON payload on stdin, so this condition is hit for hooks.
+  // We only use silent-launcher when stdin is a TTY (interactive) and there's
+  // no data to lose — the console-flash prevention still matters there.
+  const stdinIsPiped = !process.stdin.isTTY;
+
   if (isWindows) {
     const silentLauncher = path.join(__dirname, 'silent-launcher.exe');
 
-    if (fs.existsSync(silentLauncher) && fs.existsSync(tsxCli)) {
+    if (!stdinIsPiped && fs.existsSync(silentLauncher) && fs.existsSync(tsxCli)) {
       // PseudoConsole + CREATE_NO_WINDOW: popup-free execution
       child = spawn(silentLauncher, ['node', tsxCli, ...scriptArgs], {
         stdio: 'inherit',
