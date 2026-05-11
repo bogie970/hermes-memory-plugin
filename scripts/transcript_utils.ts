@@ -160,12 +160,16 @@ export function formatMessagesForLetta(
   const formatted: Array<{role: string, text: string}> = [];
   const toolNameMap: Map<string, string> = new Map(); // tool_use_id -> tool_name
 
-  log(`Formatting messages from index ${startIndex + 1} to ${messages.length - 1}`);
+  // Counters for summary log
+  const toolUseCounts: Record<string, number> = {};
+  let toolResultCount = 0;
+  let assistantTextCount = 0;
+  let userTextCount = 0;
+  let summaryCount = 0;
+  let totalToolUses = 0;
 
   for (let i = startIndex + 1; i < messages.length; i++) {
     const msg = messages[i];
-
-    log(`  Message ${i}: type=${msg.type}`);
 
     // Handle summary messages
     if (msg.type === 'summary' && msg.summary) {
@@ -173,7 +177,7 @@ export function formatMessagesForLetta(
         role: 'system',
         text: `[Session Summary]: ${msg.summary}`,
       });
-      log(`    -> Added summary`);
+      summaryCount++;
       continue;
     }
 
@@ -189,7 +193,7 @@ export function formatMessagesForLetta(
       // User text input
       if (extracted.text) {
         formatted.push({ role: 'user', text: extracted.text });
-        log(`    -> Added user message (${extracted.text.length} chars)`);
+        userTextCount++;
       }
 
       // Tool results (these come in user messages)
@@ -201,7 +205,7 @@ export function formatMessagesForLetta(
           role: 'system',
           text: `${prefix}: ${toolName}]\n${truncatedContent}`,
         });
-        log(`    -> Added tool result for ${toolName} (error: ${toolResult.isError})`);
+        toolResultCount++;
       }
     }
 
@@ -223,7 +227,6 @@ export function formatMessagesForLetta(
           role: 'assistant',
           text: `[Thinking]: ${truncatedThinking}`,
         });
-        log(`    -> Added thinking (${extracted.thinking.length} chars, truncated to 500)`);
       }
 
       // Tool calls
@@ -267,18 +270,28 @@ export function formatMessagesForLetta(
           role: 'assistant',
           text: `[Tool: ${toolUse.name}] ${inputSummary}`,
         });
-        log(`    -> Added tool use: ${toolUse.name}`);
+        toolUseCounts[toolUse.name] = (toolUseCounts[toolUse.name] || 0) + 1;
+        totalToolUses++;
       }
 
       // Assistant text response
       if (extracted.text) {
         formatted.push({ role: 'assistant', text: extracted.text });
-        log(`    -> Added assistant text (${extracted.text.length} chars)`);
+        assistantTextCount++;
       }
     }
   }
 
-  log(`Formatted ${formatted.length} messages total`);
+  const toolBreakdown = Object.entries(toolUseCounts)
+    .sort((a, b) => b[1] - a[1])
+    .map(([n, c]) => `${n}:${c}`)
+    .join(' ');
+  log(
+    `Formatted ${formatted.length} messages [range ${startIndex + 1}..${messages.length - 1}]: ` +
+    `${totalToolUses} tool uses (${toolBreakdown || 'none'}), ` +
+    `${toolResultCount} tool results, ${assistantTextCount} assistant texts, ` +
+    `${userTextCount} user texts, ${summaryCount} summaries`
+  );
   return formatted;
 }
 

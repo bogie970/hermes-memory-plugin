@@ -53,6 +53,28 @@ function ensureLogDir(): void {
   }
 }
 
+const LOG_MAX_BYTES = 10 * 1024 * 1024; // 10 MB
+
+// Rotate at process start: if existing log exceeds threshold, move to .log.1
+function rotateLogIfNeeded(): void {
+  try {
+    ensureLogDir();
+    if (fs.existsSync(LOG_FILE)) {
+      const size = fs.statSync(LOG_FILE).size;
+      if (size > LOG_MAX_BYTES) {
+        const rotated = LOG_FILE + '.1';
+        if (fs.existsSync(rotated)) {
+          try { fs.unlinkSync(rotated); } catch { /* ignore */ }
+        }
+        fs.renameSync(LOG_FILE, rotated);
+      }
+    }
+  } catch {
+    // never let log rotation crash the hook
+  }
+}
+rotateLogIfNeeded();
+
 function log(message: string): void {
   ensureLogDir();
   const timestamp = new Date().toISOString();
