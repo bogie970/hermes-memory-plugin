@@ -19,7 +19,8 @@ _CONFIG_FILE = _PLUGIN_ROOT / "hermes.config.json"
 def _load_plugin_config() -> dict:
     try:
         if _CONFIG_FILE.exists():
-            return json.loads(_CONFIG_FILE.read_text())
+            # utf-8-sig strips BOM if present (PowerShell writes BOM by default)
+            return json.loads(_CONFIG_FILE.read_text(encoding="utf-8-sig"))
     except Exception:
         pass
     return {}
