@@ -47,7 +47,7 @@ function log(msg: string): void {
 }
 
 async function readHookInput(): Promise<HookInput> {
-  const v = await readBoundedStdinJson<HookInput>(2000);
+  const v = await readBoundedStdinJson<HookInput>(30000);
   if (!v) throw new Error('empty or oversized stdin');
   return v;
 }

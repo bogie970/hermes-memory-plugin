@@ -258,7 +258,7 @@ export function cleanLettaFromClaudeMd(projectDir: string): void {
 // Bounded stdin reader (DoS prevention)
 // ============================================
 
-const STDIN_MAX_BYTES = 4 * 1024 * 1024;  // 4 MB hard cap
+const STDIN_MAX_BYTES = 64 * 1024 * 1024;  // 64 MB hard cap
 
 /**
  * Read hook input JSON from stdin with a size cap.
