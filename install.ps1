@@ -162,6 +162,16 @@ $pthFile = Join-Path (Join-Path (Join-Path $VenvPath "Lib") "site-packages") "he
 Set-Content -Path $pthFile -Value $pythonDir -Encoding utf8
 Write-OK "Added python/ to venv site-packages"
 
+# ── Step 10: Sync source -> plugin cache ──
+Write-Step "Syncing source to plugin cache"
+$syncScript = Join-Path $ScriptRoot "sync-cache.ps1"
+if (Test-Path $syncScript) {
+    & $syncScript
+    Write-OK "Cache sync complete"
+} else {
+    Write-Warn "sync-cache.ps1 not found; skipping cache sync"
+}
+
 # ── Done ──
 Write-Host ""
 Write-Host "============================================" -ForegroundColor Green
