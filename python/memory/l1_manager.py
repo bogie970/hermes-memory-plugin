@@ -137,11 +137,48 @@ Transcript fragment:
 
 
 def _default_chat_fn(messages, tools=None, model="haiku", timeout=60, **kw):
-    """Find and call the production claude_cli_chat module.
+    """Get a Claude CLI chat function.
 
-    Tries multiple known locations; returns None if not available.
-    The plugin ships claude_cli_chat in claude-subconscious/python/subconscious/.
+    Resolution order:
+      1. llm_caller.get_llm_caller("claude-cli-standalone") — always importable
+         from aisys/memory/. Used in scheduled CLI contexts (promotion_cli,
+         eval harness, ad-hoc). Carries the DETACHED_PROCESS + LETTA_MODE=off
+         env hardening from 5da9367.
+      2. subconscious.claude_cli_chat — the plugin-bundled module. Available
+         when running from plugin context where PYTHONPATH includes the
+         plugin's python/ dir. Supports tool calls if any future caller needs them.
+      3. None — caller treats as "LLM unavailable".
+
+    Returns: {"content": "<text>"} on success, None on failure. Compatible
+    with the existing claude_cli_chat return shape so callers don't need updates.
     """
+    # Primary: llm_caller (universally importable)
+    try:
+        from memory.llm_caller import get_llm_caller
+        caller = get_llm_caller("claude-cli-standalone", model=model, timeout=timeout)
+        if caller is not None:
+            # Join messages into a single prompt. Preserve role order: system
+            # first, then user/assistant turns. None of the current callers
+            # use the tools arg, so we ignore it (path 2 would handle it).
+            parts = []
+            for m in messages or []:
+                role = m.get("role", "user")
+                content = m.get("content", "")
+                if role == "system":
+                    parts.insert(0, content)
+                else:
+                    parts.append(content)
+            prompt = "\n\n".join(p for p in parts if p)
+            try:
+                text = caller(prompt)
+            except Exception:
+                text = None
+            if text:
+                return {"content": text}
+    except Exception:
+        pass
+
+    # Fallback: plugin-bundled claude_cli_chat (handles tools if needed)
     import importlib
     for module_path in ("subconscious.claude_cli_chat",
                         "claude_subconscious.python.subconscious.claude_cli_chat"):
