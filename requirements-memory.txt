@@ -16,4 +16,20 @@ pydantic>=2.10.0
 rank-bm25>=0.2.2
 
 # Concurrency / singleton locks
+# Both are used: portalocker for write_gate singleton, filelock for whispers/blocks
 portalocker>=2.8
+filelock>=3.15
+
+# HTTP — Ollama client, embed daemon, healthchecks
+requests>=2.31
+
+# MCP server (memory_server.py exposes memory_search / memory_save tools)
+mcp>=1.0
+
+# YAML — eval harness configs, migration scripts, plugin tests
+pyyaml>=6.0
+
+# Optional LLM SDKs (lazy-imported, only needed if you set the matching API key).
+# Uncomment if you want them installed by default:
+# anthropic>=0.39
+# openai>=1.40
