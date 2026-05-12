@@ -14,3 +14,6 @@ pydantic>=2.10.0
 
 # Hybrid search
 rank-bm25>=0.2.2
+
+# Concurrency / singleton locks
+portalocker>=2.8
