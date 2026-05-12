@@ -1,5 +1,36 @@
 # Changelog
 
+All notable changes to this project will be documented in this file.
+
+The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
+and this project adheres to [Semantic Versioning](https://semver.org/).
+
+## [Unreleased] — 2026-05-11/12 production debugging session
+
+### Fixed
+
+- **`a7331e8` (2026-05-11) — ConPTY silent-launcher stdin bypass.** THIS WAS THE ROOT FIX for the silent-hook bug that had been masquerading as a dozen smaller problems. `hooks/silent-npx.cjs` now detects when stdin is piped and bypasses `silent-launcher.exe` entirely — ConPTY was swallowing the piped JSON payload from Claude Code. Symptom prior to fix: Stop / PreCompact hooks fired but produced no log entries, no LanceDB writes, no observable side-effect.
+
+- **`0f1f788` (2026-05-11) — Hook stdin timeout 2000ms → 30000ms, max bytes 4MB → 64MB.** Claude Code now ships 10+ MB transcript payloads on Stop; the previous caps silently truncated input. Defense in depth — the ConPTY fix above was the real cause, but these limits were also too low for current Claude Code behavior.
+
+- **`10ab4e4` (2026-05-11) — Log volume fix in `transcript_utils.ts`.** Replaced per-message log entries with a single summary line per invocation; added 10MB log rotation in `stop_capture.ts`. `send_messages.log` was previously growing at multi-MB-per-day rates.
+
+- **`7f7742` (2026-05-11) — Plugin pointed at empty `~/.hermes` instead of populated hermes repo.** Resolution path fix.
+
+- **`da9d473` (2026-05-11) — Sync `llm_caller.py` + `runner.py` from hermes.** Brings in: `DETACHED_PROCESS` flag on the `claude --print` subprocess and `LETTA_MODE=off` / `HERMES_MODE=off` env vars so the nested Claude invocation does not re-trigger plugin hooks; file-lock singleton via `portalocker.lock` in `runner.py` replacing the old fragile PID check.
+
+  **Hallucination caveat (transparency):** The hermes-side commits motivating this sync (`5da9367`, `753d44b`) were originally diagnosed as fixing a "recursive runner chain." That observation was wrong — what looked like recursion was the diagnostic command's own bash/powershell subprocess tree being misidentified. The code is still good defensive practice (detaching nested Claude subprocesses and using a file-lock singleton are both correct), but the original bug report driving the change did not exist. Documented here rather than silently rewritten.
+
+### Added
+
+- **`f1b8796` (2026-05-11) — `sync-cache.ps1` / `sync-cache.sh` scripts.** Propagate edits from the source repo to the active plugin cache (`~/.claude/plugins/cache/...`) so changes take effect without a full re-install. Closes the dev-loop gap where source edits had no effect because the cache copy was stale.
+
+- **`2cad254` (2026-05-11) — `portalocker` added to `requirements-memory.txt`.** Required by the file-lock singleton in `runner.py`.
+
+- **`2da71ed` (2026-05-11) — Embedding daemon + vector index management.** Long-lived embedding process replaces per-call spawn; vector index lifecycle (create / compact / verify) is now explicit.
+
+---
+
 ## [2.0.0] - 2026-05-06 — v2 rebuild as Hermes Memory Plugin
 
 Comprehensive rebuild from Letta cross-session-agent paradigm to local-first
