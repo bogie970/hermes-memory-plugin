@@ -100,13 +100,8 @@ def _build_claude_cli_standalone(model: str, timeout: int) -> LLMCaller | None:
                 input=prompt,
                 capture_output=True,
                 text=True,
+                encoding="utf-8",
                 timeout=timeout,
-                # NOTE: DETACHED_PROCESS removed 2026-05-12 — it broke piped
-                # stdin/stdout to claude --print on Windows (capture_output
-                # pipes need a console context). Was added in 5da9367 based
-                # on a phantom recursive-chain hypothesis that turned out to
-                # be a diagnostic self-match (see POSTMORTEM_2026-05-11.md).
-                # CREATE_NO_WINDOW alone suppresses console flash and is safe.
                 creationflags=(subprocess.CREATE_NO_WINDOW
                                if platform.system() == "Windows" else 0),
                 env={**os.environ, "CLAUDE_CODE_ENTRYPOINT": "standalone-worker",
@@ -128,7 +123,7 @@ def _build_claude_cli_standalone(model: str, timeout: int) -> LLMCaller | None:
     try:
         check = subprocess.run(
             [claude_bin, "--version"],
-            capture_output=True, text=True, timeout=10,
+            capture_output=True, text=True, encoding="utf-8", timeout=10,
             creationflags=(subprocess.CREATE_NO_WINDOW
                            if platform.system() == "Windows" else 0),
         )

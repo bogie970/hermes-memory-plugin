@@ -81,11 +81,10 @@ def main() -> int:
     ap.add_argument("--timeout", type=int, default=60, help="Soft hint, unused for now")
     args = ap.parse_args()
 
-    # Lazy import — hermes paths may not be wired up at module-load time
-    sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent.parent.parent))
-    from aisys.memory import l1_manager
-    from aisys.memory.embeddings import EmbeddingService
-    from aisys.memory.store import MemoryStore
+    # Lazy import — keep consistent with all other modules in this package
+    from memory import l1_manager
+    from memory.embeddings import EmbeddingService
+    from memory.store import MemoryStore
 
     # Acquire eviction mutex per marker dir (one in-flight eviction per
     # project at a time). Prevents the race where two Stop hooks in quick
