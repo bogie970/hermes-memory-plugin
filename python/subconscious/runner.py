@@ -1,6 +1,6 @@
 """Entry point for the subconscious background worker.
 
-Called from the TS hook via: python -m subconscious.runner <payload.json>
+Called from the TS hook via: python -m aisys.subconscious.runner <payload.json>
 
 Follows the same interface contract as the original send_worker_sdk.ts:
 1. Read payload JSON from CLI arg (file path)
@@ -17,7 +17,10 @@ import logging
 import os
 import sys
 import time
+from contextlib import ExitStack
 from pathlib import Path
+
+import portalocker
 
 log = logging.getLogger("subconscious.runner")
 
@@ -53,46 +56,42 @@ def _get_blocks_path(cwd: str) -> str:
     return os.path.join(home, ".letta", "claude", "local_blocks.json")
 
 
-def _check_singleton(cwd: str) -> bool:
-    """Check if another worker is already running for this project.
+def _acquire_worker_lock(cwd: str, stack: ExitStack) -> bool:
+    """Acquire an exclusive non-blocking file lock for this worker.
 
-    Uses a PID file. Returns True if we can proceed, False if another
-    worker is active.
+    Replaces the fragile PID-based singleton check. Uses portalocker on
+    `<.letta>/claude/worker.lock`. The lock is held for the lifetime of
+    the process and released implicitly on process death (OS closes fd).
+
+    Returns True if the lock was acquired (we should proceed),
+    False if another worker holds it.
+
+    The lock file's contents (PID + timestamp) are written for debug
+    visibility only — they are NOT used for the singleton decision.
     """
     home = os.environ.get("LETTA_HOME", cwd)
-    pid_file = os.path.join(home, ".letta", "claude", "worker.pid")
-
-    if os.path.exists(pid_file):
-        try:
-            content = Path(pid_file).read_text(encoding="utf-8").strip()
-            parts = content.split(":")
-            old_pid = int(parts[0])
-            old_time = float(parts[1]) if len(parts) > 1 else 0
-            from .config import LOOP_TIMEOUT_SECONDS
-            stale_threshold = LOOP_TIMEOUT_SECONDS + 30
-            if time.time() - old_time > stale_threshold:
-                log.info("PID file is stale (%.0fs old) — proceeding", time.time() - old_time)
-            elif sys.platform == "win32":
-                import ctypes
-                kernel32 = ctypes.windll.kernel32  # type: ignore[attr-defined]
-                handle = kernel32.OpenProcess(0x0400, False, old_pid)  # PROCESS_QUERY_INFORMATION
-                if handle:
-                    exit_code = ctypes.c_ulong()
-                    kernel32.GetExitCodeProcess(handle, ctypes.byref(exit_code))
-                    kernel32.CloseHandle(handle)
-                    if exit_code.value == 259:  # STILL_ACTIVE
-                        log.info("Another worker (PID %d) is still running — skipping", old_pid)
-                        return False
-            else:
-                os.kill(old_pid, 0)
-                log.info("Another worker (PID %d) is still running — skipping", old_pid)
-                return False
-        except (ValueError, OSError, ProcessLookupError):
-            pass  # stale PID file, proceed
-
-    # Write our PID
-    os.makedirs(os.path.dirname(pid_file), exist_ok=True)
-    Path(pid_file).write_text(f"{os.getpid()}:{time.time():.0f}", encoding="utf-8")
+    lock_dir = os.path.join(home, ".letta", "claude")
+    os.makedirs(lock_dir, exist_ok=True)
+    lock_path = os.path.join(lock_dir, "worker.lock")
+    try:
+        fp = open(lock_path, "a+", encoding="utf-8")
+    except OSError as e:
+        log.warning("Could not open worker.lock for locking: %s", e)
+        return False
+    try:
+        portalocker.lock(fp, portalocker.LOCK_EX | portalocker.LOCK_NB)
+    except (portalocker.LockException, OSError):
+        fp.close()
+        return False
+    # Lock held — keep fp alive for the lifetime of the process.
+    stack.callback(fp.close)
+    try:
+        fp.seek(0)
+        fp.truncate()
+        fp.write(f"{os.getpid()}:{time.time():.0f}\n")
+        fp.flush()
+    except OSError:
+        pass  # courtesy write, non-fatal
     return True
 
 
@@ -202,19 +201,6 @@ def _ensure_model(host: str, model: str) -> bool:
     return False
 
 
-def _cleanup_pid(cwd: str) -> None:
-    home = os.environ.get("LETTA_HOME", cwd)
-    pid_file = os.path.join(home, ".letta", "claude", "worker.pid")
-    try:
-        if os.path.exists(pid_file):
-            content = Path(pid_file).read_text(encoding="utf-8").strip()
-            stored_pid = content.split(":")[0]
-            if stored_pid == str(os.getpid()):
-                os.unlink(pid_file)
-    except OSError:
-        pass
-
-
 def main(payload_path: str | None = None) -> None:
     """Main entry point. Reads payload, runs agentic loop, updates state."""
     if payload_path is None:
@@ -254,149 +240,153 @@ def main(payload_path: str | None = None) -> None:
     log.info("Session: %s, cwd: %s", session_id, cwd)
     log.info("Transcript length: %d chars", len(transcript_xml))
 
-    # Singleton check
-    if not _check_singleton(cwd):
-        log.info("Skipping — another worker is active")
-        sys.exit(0)
-
-    try:
-        # Skip if transcript is too short (no meaningful content)
-        if len(transcript_xml) < 50:
-            log.info("Transcript too short (%d chars), skipping", len(transcript_xml))
-            _update_state(state_file, new_last_index)
-            _cleanup_payload(payload_path)
+    # Singleton check via exclusive file lock (released implicitly on process exit)
+    with ExitStack() as stack:
+        if not _acquire_worker_lock(cwd, stack):
+            log.info("Another worker holds worker.lock — skipping")
             return
 
-        # Ensure Ollama is running and model is available
-        from . import ollama_chat
-        from .config import OLLAMA_HOST, OLLAMA_MODEL
-
-        if not ollama_chat.ping(OLLAMA_HOST):
-            log.info("Ollama not running — attempting to start")
-            if not _start_ollama():
-                log.error("Could not start Ollama — skipping")
-                _write_status(cwd, error="Ollama could not be started")
-                _cleanup_pid(cwd)
-                sys.exit(0)
-
-        if not _ensure_model(OLLAMA_HOST, OLLAMA_MODEL):
-            log.error("Model %s unavailable and pull failed — skipping", OLLAMA_MODEL)
-            _write_status(cwd, error=f"Model {OLLAMA_MODEL} unavailable")
-            _cleanup_pid(cwd)
-            sys.exit(0)
-
-        # Initialize block store
-        blocks_path = _get_blocks_path(cwd)
-        from .blocks import BlockStore
-        store = BlockStore(blocks_path)
-
-        log.info("Blocks path: %s", blocks_path)
-        log.info("Block summary: %s", store.summary())
-
-        # Try to initialize vector memory store for conversation_search
-        memory_store = None
         try:
-            from memory.store import MemoryStore
-            from memory.config import LANCEDB_PATH
-            memory_store = MemoryStore(db_path=LANCEDB_PATH)
-            log.info("Vector memory store initialized at %s", LANCEDB_PATH)
-        except Exception as e:
-            log.warning("Vector memory store unavailable: %s", e)
+            # Skip if transcript is too short (no meaningful content)
+            if len(transcript_xml) < 50:
+                log.info("Transcript too short (%d chars), skipping", len(transcript_xml))
+                _update_state(state_file, new_last_index)
+                _cleanup_payload(payload_path)
+                return
 
-        # Run the agentic loop
-        from .loop import run_loop
-        result = run_loop(
-            store=store,
-            transcript_xml=transcript_xml,
-            session_id=session_id,
-            model=OLLAMA_MODEL,
-            host=OLLAMA_HOST,
-            memory_store=memory_store,
-        )
+            # Ensure Ollama is running and model is available
+            from . import ollama_chat
+            from .config import OLLAMA_HOST, OLLAMA_MODEL
 
-        log.info(
-            "Loop result: %d iterations, %d tool calls, %.1fs, error=%s",
-            result.iterations,
-            len(result.tool_calls_made),
-            result.duration_seconds,
-            result.error,
-        )
+            if not ollama_chat.ping(OLLAMA_HOST):
+                log.info("Ollama not running — attempting to start")
+                if not _start_ollama():
+                    log.error("Could not start Ollama — skipping")
+                    _write_status(cwd, error="Ollama could not be started")
+                    return
 
-        if result.tool_calls_made:
-            for tc in result.tool_calls_made:
-                log.info("  Tool: %s(%s) -> %s", tc["name"], list(tc["args"].keys()), tc["result"][:100])
+            if not _ensure_model(OLLAMA_HOST, OLLAMA_MODEL):
+                log.error("Model %s unavailable and pull failed — skipping", OLLAMA_MODEL)
+                _write_status(cwd, error=f"Model {OLLAMA_MODEL} unavailable")
+                return
 
-        if result.final_response:
-            log.info("Final response: %s", result.final_response[:300])
+            # Initialize block store
+            blocks_path = _get_blocks_path(cwd)
+            from .blocks import BlockStore
+            store = BlockStore(blocks_path)
 
-        # --- Phase 2: Consolidation into L2 vector store (incremental) ---
-        try:
-            from .consolidation import ConsolidationEngine, parse_transcript_messages
-            from memory.llm_caller import get_llm_caller
+            log.info("Blocks path: %s", blocks_path)
+            log.info("Block summary: %s", store.summary())
 
-            # Try claude-cli-standalone first (uses subscription), fall back to ollama
-            llm = get_llm_caller("claude-cli-standalone", model="sonnet", timeout=120)
-            if llm is None:
-                log.info("claude-cli-standalone unavailable, falling back to ollama for consolidation")
-                llm = get_llm_caller("ollama", model=OLLAMA_MODEL, timeout=120)
-
-            if llm and memory_store:
-                parsed_messages = parse_transcript_messages(transcript_xml)
-                if parsed_messages:
-                    # Only consolidate messages we haven't processed yet.
-                    # new_last_index tracks the payload's newLastProcessedIndex.
-                    # First run has lastProcessedIndex = -1, so all messages are new.
-                    if new_last_index > 0 and len(parsed_messages) > new_last_index:
-                        new_messages = parsed_messages[new_last_index:]
-                        log.info(
-                            "Incremental consolidation: %d total messages, processing %d new (from index %d)",
-                            len(parsed_messages), len(new_messages), new_last_index,
-                        )
-                    else:
-                        new_messages = parsed_messages
-
-                    if new_messages:
-                        engine = ConsolidationEngine(memory_store, llm)
-                        consol_result = engine.process_batch(new_messages, session_id)
-                        log.info(
-                            "Consolidation: %d extracted, %d stored, %d merged, %d skipped",
-                            consol_result.extracted,
-                            consol_result.stored,
-                            consol_result.merged,
-                            consol_result.skipped,
-                        )
-                        if consol_result.errors:
-                            log.warning("Consolidation errors: %s", consol_result.errors[:3])
-                    else:
-                        log.info("No new messages to consolidate after slicing")
-                else:
-                    log.info("No parseable messages in transcript — skipping consolidation")
-            else:
-                log.info("Consolidation skipped: llm=%s, memory_store=%s",
-                         "ok" if llm else "none", "ok" if memory_store else "none")
-        except Exception as e:
-            log.warning("Consolidation failed (non-fatal): %s", e, exc_info=True)
-
-        # --- Phase 5: Periodic tiering/decay/merge ---
-        if memory_store:
+            # Try to initialize vector memory store for conversation_search
+            memory_store = None
             try:
-                _run_periodic_maintenance(cwd, memory_store)
+                import pathlib as _pl
+                import sys as _sys
+                _hermes_root = _pl.Path(__file__).resolve().parent.parent.parent
+                _aisys_str = str(_hermes_root / "aisys")
+                if _aisys_str not in _sys.path:
+                    _sys.path.insert(0, _aisys_str)
+                from memory.store import MemoryStore
+                from memory.config import LANCEDB_PATH
+                memory_store = MemoryStore(db_path=LANCEDB_PATH)
+                log.info("Vector memory store initialized at %s", LANCEDB_PATH)
             except Exception as e:
-                log.warning("Periodic maintenance failed (non-fatal): %s", e, exc_info=True)
+                log.warning("Vector memory store unavailable — conversation_search disabled: %s", e)
 
-        # Update state and cleanup
-        _update_state(state_file, new_last_index)
-        _cleanup_payload(payload_path)
-        _write_status(cwd, success=True, tool_calls=len(result.tool_calls_made))
+            # Run the agentic loop
+            from .loop import run_loop
+            result = run_loop(
+                store=store,
+                transcript_xml=transcript_xml,
+                session_id=session_id,
+                model=OLLAMA_MODEL,
+                host=OLLAMA_HOST,
+                memory_store=memory_store,
+            )
 
-        log.info("Worker completed successfully")
+            log.info(
+                "Loop result: %d iterations, %d tool calls, %.1fs, error=%s",
+                result.iterations,
+                len(result.tool_calls_made),
+                result.duration_seconds,
+                result.error,
+            )
 
-    except Exception as e:
-        log.error("Worker failed: %s", e, exc_info=True)
-        _write_status(cwd, error=str(e))
-        sys.exit(1)
-    finally:
-        _cleanup_pid(cwd)
+            if result.tool_calls_made:
+                for tc in result.tool_calls_made:
+                    log.info("  Tool: %s(%s) -> %s", tc["name"], list(tc["args"].keys()), tc["result"][:100])
+
+            if result.final_response:
+                log.info("Final response: %s", result.final_response[:300])
+
+            # --- Phase 2: Consolidation into L2 vector store (incremental) ---
+            try:
+                from .consolidation import ConsolidationEngine, parse_transcript_messages
+                from memory.llm_caller import get_llm_caller
+
+                # Try claude-cli-standalone first (uses subscription), fall back to ollama
+                llm = get_llm_caller("claude-cli-standalone", model="sonnet", timeout=120)
+                if llm is None:
+                    log.info("claude-cli-standalone unavailable, falling back to ollama for consolidation")
+                    llm = get_llm_caller("ollama", model=OLLAMA_MODEL, timeout=120)
+
+                if llm and memory_store:
+                    parsed_messages = parse_transcript_messages(transcript_xml)
+                    if parsed_messages:
+                        # Only consolidate messages we haven't processed yet.
+                        # new_last_index tracks the payload's newLastProcessedIndex.
+                        # First run has lastProcessedIndex = -1, so all messages are new.
+                        if new_last_index > 0 and len(parsed_messages) > new_last_index:
+                            new_messages = parsed_messages[new_last_index:]
+                            log.info(
+                                "Incremental consolidation: %d total messages, processing %d new (from index %d)",
+                                len(parsed_messages), len(new_messages), new_last_index,
+                            )
+                        else:
+                            new_messages = parsed_messages
+
+                        if new_messages:
+                            engine = ConsolidationEngine(memory_store, llm)
+                            consol_result = engine.process_batch(new_messages, session_id)
+                            log.info(
+                                "Consolidation: %d extracted, %d stored, %d merged, %d skipped",
+                                consol_result.extracted,
+                                consol_result.stored,
+                                consol_result.merged,
+                                consol_result.skipped,
+                            )
+                            if consol_result.errors:
+                                log.warning("Consolidation errors: %s", consol_result.errors[:3])
+                        else:
+                            log.info("No new messages to consolidate after slicing")
+                    else:
+                        log.info("No parseable messages in transcript — skipping consolidation")
+                else:
+                    log.info("Consolidation skipped: llm=%s, memory_store=%s",
+                             "ok" if llm else "none", "ok" if memory_store else "none")
+            except Exception as e:
+                log.warning("Consolidation failed (non-fatal): %s", e, exc_info=True)
+
+            # --- Phase 5: Periodic tiering/decay/merge ---
+            if memory_store:
+                try:
+                    _run_periodic_maintenance(cwd, memory_store)
+                except Exception as e:
+                    log.warning("Periodic maintenance failed (non-fatal): %s", e, exc_info=True)
+
+            # Update state and cleanup
+            _update_state(state_file, new_last_index)
+            _cleanup_payload(payload_path)
+            _write_status(cwd, success=True, tool_calls=len(result.tool_calls_made))
+
+            log.info("Worker completed successfully")
+
+        except Exception as e:
+            log.error("Worker failed: %s", e, exc_info=True)
+            _write_status(cwd, error=str(e))
+            sys.exit(1)
+        # Lock released implicitly when ExitStack unwinds (process exit).
 
 
 def _get_tiering_timestamp_path(cwd: str) -> str:

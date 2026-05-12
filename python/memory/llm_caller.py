@@ -101,9 +101,10 @@ def _build_claude_cli_standalone(model: str, timeout: int) -> LLMCaller | None:
                 capture_output=True,
                 text=True,
                 timeout=timeout,
-                creationflags=(subprocess.CREATE_NO_WINDOW
+                creationflags=(subprocess.CREATE_NO_WINDOW | subprocess.DETACHED_PROCESS
                                if platform.system() == "Windows" else 0),
-                env={**os.environ, "CLAUDE_CODE_ENTRYPOINT": "standalone-worker"},
+                env={**os.environ, "CLAUDE_CODE_ENTRYPOINT": "standalone-worker",
+                     "LETTA_MODE": "off", "HERMES_MODE": "off"},
             )
             if result.returncode != 0:
                 stderr = result.stderr.strip()[:200] if result.stderr else ""
