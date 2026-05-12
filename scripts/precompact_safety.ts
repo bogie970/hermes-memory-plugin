@@ -13,7 +13,7 @@ import * as os from 'os';
 import * as path from 'path';
 import { spawnSync } from 'child_process';
 import { fileURLToPath } from 'url';
-import { buildPythonSubprocessEnv, getMode, getTempStateDir, readBoundedStdinJson } from './conversation_utils.ts';
+import { buildPythonSubprocessEnv, getMode, getTempStateDir, readBoundedStdinJson, recordHookError } from './conversation_utils.ts';
 import { getConfig } from './config.ts';
 
 const __filename = fileURLToPath(import.meta.url);
@@ -159,5 +159,6 @@ async function main(): Promise<void> {
 
 main().catch((e) => {
   log(`unhandled: ${e}`);
+  recordHookError('precompact_safety.ts', e);
   emitContinue();
 });

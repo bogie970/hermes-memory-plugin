@@ -305,6 +305,69 @@ export async function readBoundedStdinJson<T = unknown>(timeoutMs = 1500): Promi
 }
 
 // ============================================
+// Hook error sentinel (architectural defense against silent failures)
+// ============================================
+
+const HOOK_ERROR_FILE = 'hook_errors.jsonl';
+const HOOK_ERROR_MAX_BYTES = 1024 * 1024; // 1 MB cap; rotate to .1 on overflow
+
+/**
+ * Record an uncaught hook error to the sentinel file so the next
+ * UserPromptSubmit can surface it in Claude's context as a <hook_error>
+ * tag. Append-only JSONL. Safe in catastrophic conditions — every
+ * filesystem call is wrapped, and this function NEVER throws.
+ *
+ * Do not pass transcript content or PII — only script name + message
+ * + first 5 lines of stack.
+ */
+export function recordHookError(scriptName: string, error: unknown): void {
+  try {
+    const dir = getTempStateDir();
+    try {
+      if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
+    } catch {}
+
+    const file = path.join(dir, HOOK_ERROR_FILE);
+
+    // Rotate on overflow
+    try {
+      if (fs.existsSync(file)) {
+        const stat = fs.statSync(file);
+        if (stat.size > HOOK_ERROR_MAX_BYTES) {
+          const rotated = file + '.1';
+          try { if (fs.existsSync(rotated)) fs.unlinkSync(rotated); } catch {}
+          try { fs.renameSync(file, rotated); } catch {}
+        }
+      }
+    } catch {}
+
+    let message = '';
+    let stack = '';
+    if (error instanceof Error) {
+      message = error.message || String(error);
+      stack = (error.stack || '').split('\n').slice(0, 5).join('\n');
+    } else {
+      message = typeof error === 'string' ? error : (() => {
+        try { return JSON.stringify(error); } catch { return String(error); }
+      })();
+    }
+
+    const entry = {
+      ts: new Date().toISOString(),
+      script: scriptName,
+      error: message.slice(0, 2000),
+      stack: stack.slice(0, 4000),
+    };
+
+    try {
+      fs.appendFileSync(file, JSON.stringify(entry) + '\n', { flag: 'a' });
+    } catch {}
+  } catch {
+    // Cure must not be worse than the disease — swallow everything.
+  }
+}
+
+// ============================================
 // Subprocess env allowlist
 // ============================================
 

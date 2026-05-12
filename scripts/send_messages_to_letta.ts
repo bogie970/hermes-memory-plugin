@@ -23,6 +23,7 @@ import {
   getMode,
   getTempStateDir,
   readBoundedStdinJson,
+  recordHookError,
 } from './conversation_utils.ts';
 import {
   readTranscript,
@@ -183,8 +184,12 @@ async function main(): Promise<void> {
       log(`Stack trace: ${error.stack}`);
     }
     console.error(`Error in stop_capture: ${errorMessage}`);
-    process.exit(1);
+    recordHookError('send_messages_to_letta.ts', error);
+    process.exit(0);
   }
 }
 
-main();
+main().catch((e) => {
+  try { recordHookError('send_messages_to_letta.ts', e); } catch {}
+  process.exit(0);
+});

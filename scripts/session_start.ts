@@ -17,6 +17,7 @@ import {
   getTempStateDir,
   expandPath,
   readBoundedStdinJson,
+  recordHookError,
 } from './conversation_utils.ts';
 import { getLocalConversationId } from './local_store.ts';
 
@@ -156,8 +157,12 @@ async function main(): Promise<void> {
     writeTty('\x1b[0m');
     if (tty && tty.end && tty !== process.stderr) tty.end();
 
-    process.exit(1);
+    recordHookError('session_start.ts', error);
+    process.exit(0);
   }
 }
 
-main();
+main().catch((e) => {
+  try { recordHookError('session_start.ts', e); } catch {}
+  process.exit(0);
+});

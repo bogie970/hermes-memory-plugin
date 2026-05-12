@@ -29,6 +29,7 @@ import {
   cleanLettaFromClaudeMd,
   getMode,
   getTempStateDir,
+  recordHookError,
 } from './conversation_utils.ts';
 import { getLocalAgent, consumeWhispers } from './local_store.ts';
 import { getConfig } from './config.ts';
@@ -281,6 +282,89 @@ function retrieveMemories(prompt: string, cwd: string): string {
   }
 }
 
+/**
+ * Surface unread hook errors as <hook_error> tags. Tracks cursor in
+ * hook_errors.cursor so each entry is shown exactly once. All errors
+ * swallowed — this must NEVER raise into the calling hook.
+ */
+function surfaceHookErrors(): string {
+  try {
+    const dir = getTempStateDir();
+    const file = path.join(dir, 'hook_errors.jsonl');
+    const cursorFile = path.join(dir, 'hook_errors.cursor');
+    if (!fs.existsSync(file)) return '';
+
+    let cursor = 0;
+    try {
+      if (fs.existsSync(cursorFile)) {
+        const raw = fs.readFileSync(cursorFile, 'utf-8').trim();
+        const parsed = parseInt(raw, 10);
+        if (Number.isFinite(parsed) && parsed >= 0) cursor = parsed;
+      }
+    } catch {}
+
+    let stat: fs.Stats;
+    try {
+      stat = fs.statSync(file);
+    } catch {
+      return '';
+    }
+
+    // If file was rotated (truncated/shrunk), reset cursor to 0.
+    if (cursor > stat.size) cursor = 0;
+    if (cursor === stat.size) return '';
+
+    let buf = '';
+    try {
+      const fd = fs.openSync(file, 'r');
+      try {
+        const len = stat.size - cursor;
+        const b = Buffer.alloc(len);
+        fs.readSync(fd, b, 0, len, cursor);
+        buf = b.toString('utf-8');
+      } finally {
+        try { fs.closeSync(fd); } catch {}
+      }
+    } catch {
+      return '';
+    }
+
+    const lines = buf.split('\n').filter(l => l.trim());
+    const tags: string[] = [];
+    for (const line of lines) {
+      try {
+        const entry = JSON.parse(line);
+        const ts = escapeXmlContent(String(entry.ts || ''));
+        const script = escapeXmlContent(String(entry.script || 'unknown'));
+        const errMsg = escapeXmlContent(String(entry.error || ''));
+        const stack = escapeXmlContent(String(entry.stack || ''));
+        tags.push(
+          `<hook_error script="${script}" ts="${ts}">\n` +
+          `<error>${errMsg}</error>\n` +
+          `<stack>${stack}</stack>\n` +
+          `</hook_error>`
+        );
+      } catch {
+        // skip malformed line
+      }
+    }
+
+    // Advance cursor regardless of parse failures so we don't loop forever.
+    try {
+      fs.writeFileSync(cursorFile, String(stat.size), 'utf-8');
+    } catch {}
+
+    if (tags.length === 0) return '';
+    return (
+      `<hook_errors_notice>The following hook(s) failed silently since last prompt. ` +
+      `Surface these to the user — async hooks otherwise exit 0 and go unnoticed.</hook_errors_notice>\n` +
+      tags.join('\n')
+    );
+  } catch {
+    return '';
+  }
+}
+
 async function main(): Promise<void> {
   const mode = getMode();
   if (mode === 'off') {
@@ -364,6 +448,12 @@ async function main(): Promise<void> {
       outputs.push(`<instruction>Your Subconscious sent ${wCount} above. These are one-time observations — acknowledge briefly inline, e.g. "Sub whispers: [key point]".</instruction>`);
     }
 
+    // Surface any silent hook errors recorded since last prompt
+    const hookErrorOutput = surfaceHookErrors();
+    if (hookErrorOutput) {
+      outputs.push(hookErrorOutput);
+    }
+
     const finalOutput = outputs.join('\n\n');
     debug('Final output length:', finalOutput.length, 'chars');
     console.log(finalOutput);
@@ -375,8 +465,12 @@ async function main(): Promise<void> {
   } catch (error) {
     const errorMessage = error instanceof Error ? error.message : String(error);
     console.error(`Error syncing memory: ${errorMessage}`);
-    process.exit(1);
+    recordHookError('sync_letta_memory.ts', error);
+    process.exit(0);
   }
 }
 
-main();
+main().catch((e) => {
+  try { recordHookError('sync_letta_memory.ts', e); } catch {}
+  process.exit(0);
+});
