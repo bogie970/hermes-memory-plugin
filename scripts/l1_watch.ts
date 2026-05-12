@@ -83,14 +83,79 @@ function recentEviction(markerDir: string, cooldownMs: number): boolean {
   return false;
 }
 
+/**
+ * Estimate in-context tokens from a Claude Code JSONL transcript.
+ *
+ * The naive heuristic (file.size / 3.5) overcounts massively because the
+ * JSONL file accumulates EVERY message ever written in the session,
+ * including raw tool_result payloads that get replaced by compaction
+ * summaries but never deleted from disk.
+ *
+ * Strategy:
+ *   1. Walk lines newest -> oldest, find the most recent compaction
+ *      marker. Claude Code writes these as a `user` entry with
+ *      `isCompactSummary: true` (also accept generic `type: summary`
+ *      or top-level `summary` field for forward-compat).
+ *   2. Sum content/tool_use/tool_result/summary chars from that index
+ *      forward — everything before is already replaced by the summary
+ *      and should not be double-counted.
+ *   3. Divide by CHARS_PER_TOKEN.
+ *
+ * If no compaction marker exists (early/short sessions), count all lines.
+ */
 function estimateTokens(transcriptPath: string): number {
   try {
-    const stats = fs.statSync(transcriptPath);
-    return Math.ceil(stats.size / CHARS_PER_TOKEN);
+    const data = fs.readFileSync(transcriptPath, 'utf-8');
+    const lines = data.split('\n').filter((l) => l.trim());
+
+    // Find the most recent compaction marker.
+    let summaryIdx = -1;
+    for (let i = lines.length - 1; i >= 0; i--) {
+      try {
+        const entry = JSON.parse(lines[i]);
+        if (
+          entry.isCompactSummary === true ||
+          entry.type === 'summary' ||
+          (typeof entry.summary === 'string' && entry.summary.length > 0)
+        ) {
+          summaryIdx = i;
+          break;
+        }
+      } catch {
+        continue;
+      }
+    }
+
+    const startIdx = summaryIdx >= 0 ? summaryIdx : 0;
+    let totalChars = 0;
+    for (let i = startIdx; i < lines.length; i++) {
+      try {
+        const entry = JSON.parse(lines[i]);
+        // Pull content from the common shapes we see in CC transcripts.
+        // message.content can be a string or an array of typed blocks
+        // (text, tool_use, tool_result, thinking, image). JSON.stringify
+        // gives us a conservative char count over the whole payload.
+        const payload =
+          entry.message?.content ??
+          entry.content ??
+          entry.summary ??
+          '';
+        const s =
+          typeof payload === 'string' ? payload : JSON.stringify(payload);
+        totalChars += s.length;
+      } catch {
+        continue;
+      }
+    }
+
+    return Math.ceil(totalChars / CHARS_PER_TOKEN);
   } catch {
     return 0;
   }
 }
+
+// Exported for ad-hoc verification scripts.
+export { estimateTokens };
 
 function spawnL1Manager(
   pythonPath: string,
