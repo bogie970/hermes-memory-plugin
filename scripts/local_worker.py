@@ -14,7 +14,11 @@ if not hermes_root:
     print("ERROR: HERMES_ROOT environment variable not set", file=sys.stderr)
     sys.exit(1)
 
-sys.path.insert(0, hermes_root)
+# Insert hermes/aisys FIRST so `memory.*` resolves to the canonical hermes copy.
+# Otherwise PYTHONPATH (which points to claude-subconscious/python/) wins and
+# we end up importing a stale duplicate of the memory package.
+sys.path.insert(0, os.path.join(hermes_root, "aisys"))
+sys.path.insert(1, hermes_root)
 
 from aisys.subconscious.runner import main  # noqa: E402
 

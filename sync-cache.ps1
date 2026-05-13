@@ -97,6 +97,7 @@ function Sync-Glob {
 # Runtime-relevant globs
 Sync-Glob "scripts" "*.ts"
 Sync-Glob "scripts" "*.cjs"
+Sync-Glob "scripts" "*.py"
 Sync-Glob "python\memory" "*.py"
 Sync-Glob "python\subconscious" "*.py"
 Sync-Glob "commands" "*.md"

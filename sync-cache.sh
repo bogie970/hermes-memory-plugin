@@ -74,6 +74,7 @@ sync_glob() {
 
 sync_glob "scripts"            "*.ts"
 sync_glob "scripts"            "*.cjs"
+sync_glob "scripts"            "*.py"
 sync_glob "python/memory"      "*.py"
 sync_glob "python/subconscious" "*.py"
 sync_glob "commands"           "*.md"
