@@ -20,7 +20,7 @@ const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
 const RECENT_MARKER_WINDOW_MS = 5 * 60 * 1000;  // 5 minutes
-const SYNC_TIMEOUT_MS = 20_000;
+const SYNC_TIMEOUT_MS = 45_000;
 const EVICT_FRACTION = parseFloat(process.env.HERMES_L1_EVICT_FRACTION ?? '0.5');
 const PIN_RECENT = parseInt(process.env.HERMES_L1_PIN_RECENT ?? '20');
 

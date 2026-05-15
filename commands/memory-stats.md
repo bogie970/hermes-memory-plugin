@@ -7,4 +7,4 @@ Report the current state of the Hermes memory store:
 - Per-tier breakdown (candidate / probationary / verified / tombstoned)
 - Audit log size
 
-!python -m aisys.memory.status_cli --stats --limit 3
+!python -m memory.status_cli --stats --limit 3

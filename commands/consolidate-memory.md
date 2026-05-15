@@ -12,4 +12,4 @@ stay candidate. Errors are logged but never block the pipeline.
 Each run is logged to `~/.hermes/maintenance/runs.jsonl` and visible
 via `/maintenance-status`.
 
-!python -m aisys.memory.promotion_cli --model sonnet
+!python -m memory.promotion_cli --model sonnet

@@ -162,7 +162,10 @@ async function main(): Promise<void> {
     const workerScript = path.join(__dirname, 'local_worker.py');
     const pythonCmd = hermesConfig.pythonPath;
 
-    const workerEnv = buildPythonSubprocessEnv({ PYTHONPATH: pythonDir });
+    const workerEnv = buildPythonSubprocessEnv({
+      PYTHONPATH: pythonDir,
+      HERMES_ROOT: hermesConfig.hermesRoot,
+    });
 
     const child = spawn(pythonCmd, [workerScript, payloadFile], {
       detached: true,

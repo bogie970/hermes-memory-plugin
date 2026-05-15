@@ -55,7 +55,7 @@
           {
             "type": "command",
             "command": "node \"${CLAUDE_PLUGIN_ROOT:-.}/hooks/silent-npx.cjs\" tsx \"${CLAUDE_PLUGIN_ROOT:-.}/scripts/precompact_safety.ts\"",
-            "timeout": 25
+            "timeout": 50
           }
         ]
       }

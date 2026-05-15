@@ -31,6 +31,7 @@ import sys
 
 IS_WINDOWS = sys.platform == "win32"
 MAX_MESSAGE_BYTES = 8 * 1024 * 1024  # 8 MB hard cap
+EMBED_DAEMON_PORT = int(os.environ.get("HERMES_EMBED_DAEMON_PORT", "19384"))
 
 
 def runtime_dir() -> pathlib.Path:
@@ -68,8 +69,9 @@ def listen(socket_path: pathlib.Path) -> socket.socket:
     """
     if IS_WINDOWS:
         s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-        s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-        s.bind(("127.0.0.1", 0))
+        # SO_EXCLUSIVEADDRUSE prevents a second daemon from binding the same port
+        s.setsockopt(socket.SOL_SOCKET, socket.SO_EXCLUSIVEADDRUSE, 1)  # type: ignore[attr-defined]
+        s.bind(("127.0.0.1", EMBED_DAEMON_PORT))
         s.listen(8)
         port = s.getsockname()[1]
         socket_path.write_text(str(port), encoding="utf-8")
@@ -98,15 +100,9 @@ def connect(socket_path: pathlib.Path, timeout: float = 2.0) -> socket.socket:
     Caller is responsible for closing the socket.
     """
     if IS_WINDOWS:
-        if not socket_path.exists():
-            raise ConnectionError(f"port file missing: {socket_path}")
-        try:
-            port = int(socket_path.read_text(encoding="utf-8").strip())
-        except (OSError, ValueError) as e:
-            raise ConnectionError(f"bad port file: {e}")
         s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
         s.settimeout(timeout)
-        s.connect(("127.0.0.1", port))
+        s.connect(("127.0.0.1", EMBED_DAEMON_PORT))
         s.settimeout(None)
         return s
     else:
@@ -135,6 +131,8 @@ def _recv_exact(sock: socket.socket, n: int) -> bytes | None:
     while len(buf) < n:
         try:
             chunk = sock.recv(n - len(buf))
+        except socket.timeout:
+            raise
         except (ConnectionResetError, OSError):
             return None
         if not chunk:
@@ -143,23 +141,31 @@ def _recv_exact(sock: socket.socket, n: int) -> bytes | None:
     return bytes(buf)
 
 
-def recv_msg(sock: socket.socket) -> dict | None:
+def recv_msg(sock: socket.socket, timeout: float | None = 60.0) -> dict | None:
     """Read one length-prefixed JSON message. Returns None on EOF.
 
     Raises ValueError on framing/size errors.
+    Raises socket.timeout if no data arrives within `timeout` seconds.
+    Pass timeout=None to wait indefinitely (not recommended).
     """
-    header = _recv_exact(sock, 4)
-    if header is None:
-        return None
-    (length,) = struct.unpack(">I", header)
-    if length == 0:
-        return {}
-    if length > MAX_MESSAGE_BYTES:
-        raise ValueError(f"oversized message: {length}")
-    body = _recv_exact(sock, length)
-    if body is None:
-        return None
+    old_timeout = sock.gettimeout()
+    if timeout is not None:
+        sock.settimeout(timeout)
     try:
-        return json.loads(body.decode("utf-8"))
-    except json.JSONDecodeError as e:
-        raise ValueError(f"bad json: {e}")
+        header = _recv_exact(sock, 4)
+        if header is None:
+            return None
+        (length,) = struct.unpack(">I", header)
+        if length == 0:
+            return {}
+        if length > MAX_MESSAGE_BYTES:
+            raise ValueError(f"oversized message: {length}")
+        body = _recv_exact(sock, length)
+        if body is None:
+            return None
+        try:
+            return json.loads(body.decode("utf-8"))
+        except json.JSONDecodeError as e:
+            raise ValueError(f"bad json: {e}")
+    finally:
+        sock.settimeout(old_timeout)

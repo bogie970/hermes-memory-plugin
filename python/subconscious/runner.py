@@ -117,9 +117,14 @@ def _ollama_process_exists() -> bool:
 
 
 def _start_ollama() -> bool:
-    """Start Ollama if no instance exists. Returns True if it comes up."""
+    """Start Ollama if no instance exists. Returns True if it comes up.
+
+    Uses a file lock to prevent multiple callers from spawning simultaneously.
+    """
+    import pathlib
     import shutil
     import subprocess
+    from filelock import FileLock, Timeout
 
     from .config import OLLAMA_HOST
     from . import ollama_chat
@@ -139,25 +144,40 @@ def _start_ollama() -> bool:
         log.warning("ollama binary not found in PATH")
         return False
 
-    log.info("No Ollama process found — starting one")
+    lock_path = pathlib.Path.home() / ".hermes" / "runtime" / "ollama_spawn.lock"
+    lock_path.parent.mkdir(parents=True, exist_ok=True)
     try:
-        if sys.platform == "win32":
-            subprocess.Popen(
-                [ollama_bin, "serve"],
-                stdout=subprocess.DEVNULL,
-                stderr=subprocess.DEVNULL,
-                creationflags=subprocess.CREATE_NO_WINDOW | subprocess.DETACHED_PROCESS,
-            )
-        else:
-            subprocess.Popen(
-                [ollama_bin, "serve"],
-                stdout=subprocess.DEVNULL,
-                stderr=subprocess.DEVNULL,
-                start_new_session=True,
-            )
-    except OSError as e:
-        log.warning("Failed to spawn ollama serve: %s", e)
-        return False
+        with FileLock(str(lock_path), timeout=5):
+            # Re-check after lock — another caller may have started it
+            if _ollama_process_exists():
+                log.info("Ollama appeared while waiting for lock")
+                for _ in range(15):
+                    time.sleep(1)
+                    if ollama_chat.ping(OLLAMA_HOST, timeout=2):
+                        return True
+                return False
+
+            log.info("No Ollama process found — starting one")
+            try:
+                if sys.platform == "win32":
+                    subprocess.Popen(
+                        [ollama_bin, "serve"],
+                        stdout=subprocess.DEVNULL,
+                        stderr=subprocess.DEVNULL,
+                        creationflags=subprocess.CREATE_NO_WINDOW | subprocess.DETACHED_PROCESS,
+                    )
+                else:
+                    subprocess.Popen(
+                        [ollama_bin, "serve"],
+                        stdout=subprocess.DEVNULL,
+                        stderr=subprocess.DEVNULL,
+                        start_new_session=True,
+                    )
+            except OSError as e:
+                log.warning("Failed to spawn ollama serve: %s", e)
+                return False
+    except Timeout:
+        log.info("Another caller is spawning Ollama, waiting for it...")
 
     for _ in range(15):
         time.sleep(1)

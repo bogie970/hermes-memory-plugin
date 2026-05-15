@@ -66,7 +66,7 @@ export function getConfig(): HermesConfig {
   let pythonPath = (file.pythonPath as string) || process.env.HERMES_PYTHON || '';
   if (!pythonPath) {
     const venvPython = process.platform === 'win32'
-      ? path.join(venvPath, 'Scripts', 'python.exe')
+      ? path.join(venvPath, 'Scripts', 'pythonw.exe')
       : path.join(venvPath, 'bin', 'python');
     pythonPath = fs.existsSync(venvPython) ? venvPython : 'python';
   }

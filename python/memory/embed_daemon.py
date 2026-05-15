@@ -32,6 +32,7 @@ import socket
 import sys
 import threading
 import time
+from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timezone
 
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent.parent.parent))
@@ -48,6 +49,8 @@ from memory.embed_transport import (
 DEFAULT_IDLE_SEC = int(os.environ.get("HERMES_EMBED_DAEMON_IDLE_SEC", "900"))
 MAX_TEXTS_PER_REQUEST = 256
 MAX_TEXT_BYTES = 32 * 1024
+MAX_WORKER_THREADS = 8
+CONNECTION_TIMEOUT_SEC = 120.0
 
 
 class EmbedDaemon:
@@ -60,7 +63,9 @@ class EmbedDaemon:
         self.shutdown_flag = threading.Event()
         self._model = None
         self._model_lock = threading.Lock()
+        self._stats_lock = threading.Lock()
         self._stats = {"requests": 0, "errors": 0, "texts_embedded": 0}
+        self._pool = ThreadPoolExecutor(max_workers=MAX_WORKER_THREADS)
 
     # ----- model lifecycle -----
 
@@ -95,6 +100,14 @@ class EmbedDaemon:
 
     # ----- request handlers -----
 
+    def _inc_stat(self, key: str, n: int = 1) -> None:
+        with self._stats_lock:
+            self._stats[key] = self._stats.get(key, 0) + n
+
+    def _get_stats(self) -> dict:
+        with self._stats_lock:
+            return dict(self._stats)
+
     def _handle_embed(self, req: dict) -> dict:
         texts = req.get("texts", [])
         if not isinstance(texts, list) or not texts:
@@ -116,16 +129,23 @@ class EmbedDaemon:
         self._load_model()
         try:
             with self._model_lock:
-                vectors = self._model.encode(
+                raw = self._model.encode(
                     texts,
                     normalize_embeddings=True,
                     show_progress_bar=False,
-                ).tolist()
+                )
+                vectors = raw.tolist()
         except Exception as e:
             return {"id": req.get("id"), "error": str(e)[:300],
                     "code": "ENCODE_FAILED"}
 
-        self._stats["texts_embedded"] += len(texts)
+        if len(vectors) != len(texts):
+            self._inc_stat("errors")
+            return {"id": req.get("id"),
+                    "error": f"vector count mismatch: got {len(vectors)} for {len(texts)} texts",
+                    "code": "ENCODE_FAILED"}
+
+        self._inc_stat("texts_embedded", len(texts))
         return {
             "id": req.get("id"),
             "vectors": vectors,
@@ -140,7 +160,7 @@ class EmbedDaemon:
             "loaded": self._model is not None,
             "uptime_sec": time.monotonic() - self.start_ts,
             "idle_sec": time.monotonic() - self.last_activity,
-            "stats": dict(self._stats),
+            "stats": self._get_stats(),
             "pid": os.getpid(),
         }
 
@@ -154,14 +174,14 @@ class EmbedDaemon:
     def _handle_request(self, req: dict) -> dict:
         op = req.get("op")
         self.last_activity = time.monotonic()
-        self._stats["requests"] += 1
+        self._inc_stat("requests")
         if op == "embed":
             return self._handle_embed(req)
         if op == "ping":
             return self._handle_ping(req)
         if op == "shutdown":
             return self._handle_shutdown(req)
-        self._stats["errors"] += 1
+        self._inc_stat("errors")
         return {"id": req.get("id"), "error": f"unknown op: {op!r}",
                 "code": "BAD_REQUEST"}
 
@@ -171,12 +191,15 @@ class EmbedDaemon:
         try:
             while not self.shutdown_flag.is_set():
                 try:
-                    req = recv_msg(conn)
+                    req = recv_msg(conn, timeout=CONNECTION_TIMEOUT_SEC)
+                except socket.timeout:
+                    self._log("connection timed out, dropping")
+                    return
                 except ValueError as e:
                     send_msg(conn, {"error": str(e), "code": "BAD_FRAME"})
                     return
                 if req is None:
-                    return  # client closed
+                    return
                 response = self._handle_request(req)
                 try:
                     send_msg(conn, response)
@@ -254,7 +277,7 @@ class EmbedDaemon:
             except (OSError, ValueError):
                 pass
 
-        self._log(f"accepting on {self.socket_path}")
+        self._log(f"accepting on {self.socket_path} (max {MAX_WORKER_THREADS} workers)")
         server.settimeout(5.0)
         try:
             while not self.shutdown_flag.is_set():
@@ -264,29 +287,90 @@ class EmbedDaemon:
                     continue
                 except OSError:
                     break
-                t = threading.Thread(target=self._serve_connection, args=(conn,),
-                                       daemon=True)
-                t.start()
+                try:
+                    self._pool.submit(self._serve_connection, conn)
+                except RuntimeError:
+                    try:
+                        send_msg(conn, {"error": "server shutting down", "code": "UNAVAILABLE"})
+                        conn.close()
+                    except OSError:
+                        pass
         finally:
             try:
                 server.close()
             except OSError:
                 pass
+            self._pool.shutdown(wait=False)
             self._remove_pid()
             self._log("daemon stopped")
 
         return 0
 
 
+def _is_pid_alive(pid: int) -> bool:
+    if pid <= 0:
+        return False
+    try:
+        if sys.platform == "win32":
+            import ctypes
+            h = ctypes.windll.kernel32.OpenProcess(0x1000, False, pid)
+            if h == 0:
+                return False
+            ctypes.windll.kernel32.CloseHandle(h)
+            return True
+        else:
+            os.kill(pid, 0)
+            return True
+    except (OSError, ProcessLookupError):
+        return False
+
+
+def _win_terminate() -> None:
+    """Immediately kill this process on Windows. os._exit can leave zombies
+    on DETACHED_PROCESS because DLL_PROCESS_DETACH handlers block."""
+    import ctypes
+    ctypes.windll.kernel32.TerminateProcess(
+        ctypes.windll.kernel32.GetCurrentProcess(), 0
+    )
+
+
 def main() -> int:
+    # Early port-bind singleton check (Windows only). Runs before heavy
+    # imports so the process is tiny (~4 MB) if it needs to exit.
+    if sys.platform == "win32":
+        from memory.embed_transport import EMBED_DAEMON_PORT
+        _probe = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        _probe.setsockopt(socket.SOL_SOCKET, socket.SO_EXCLUSIVEADDRUSE, 1)  # type: ignore[attr-defined]
+        try:
+            _probe.bind(("127.0.0.1", EMBED_DAEMON_PORT))
+            _probe.close()
+        except OSError:
+            _win_terminate()
+
     ap = argparse.ArgumentParser(description="Hermes embedding daemon")
     ap.add_argument("--socket", help="Override socket / port-file path")
     ap.add_argument("--idle-sec", type=int, default=DEFAULT_IDLE_SEC)
     args = ap.parse_args()
 
     socket_path = pathlib.Path(args.socket) if args.socket else default_socket_path()
-    daemon = EmbedDaemon(socket_path=socket_path, idle_sec=args.idle_sec)
-    return daemon.run()
+
+    # Singleton: exclusive file lock held for daemon's entire lifetime.
+    # If another daemon is running, the lock is held and we exit immediately.
+    from filelock import FileLock, Timeout
+    lock_path = runtime_dir() / "embed_daemon.lifetime.lock"
+    lock = FileLock(str(lock_path), timeout=0)
+    try:
+        lock.acquire()
+    except Timeout:
+        if sys.platform == "win32":
+            _win_terminate()
+        os._exit(0)
+
+    try:
+        daemon = EmbedDaemon(socket_path=socket_path, idle_sec=args.idle_sec)
+        return daemon.run()
+    finally:
+        lock.release()
 
 
 if __name__ == "__main__":

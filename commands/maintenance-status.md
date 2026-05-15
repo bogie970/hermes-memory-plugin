@@ -6,4 +6,4 @@ Show the last 10 maintenance runs for the Hermes memory system, including
 Sonnet daily promotions, Opus weekly audits, and L1 eviction triggers,
 plus a tier breakdown of the current LanceDB store.
 
-!python -m aisys.memory.status_cli --stats --limit 10
+!python -m memory.status_cli --stats --limit 10

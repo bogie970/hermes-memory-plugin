@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import os
 import pathlib
+import socket
 import subprocess
 import sys
 import time
@@ -24,6 +25,7 @@ from typing import Any
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent.parent.parent))
 
 from memory.embed_transport import (
+    EMBED_DAEMON_PORT,
     connect,
     default_socket_path,
     recv_msg,
@@ -100,24 +102,51 @@ class DaemonClient:
         except (ConnectionError, OSError, ValueError):
             return False
 
+    def _daemon_port_bound(self) -> bool:
+        """On Windows, check if the daemon's fixed port is already bound."""
+        if sys.platform != "win32":
+            return False
+        s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        s.setsockopt(socket.SOL_SOCKET, socket.SO_EXCLUSIVEADDRUSE, 1)  # type: ignore[attr-defined]
+        try:
+            s.bind(("127.0.0.1", EMBED_DAEMON_PORT))
+            s.close()
+            return False  # Port free — daemon not running
+        except OSError:
+            return True  # Port in use — daemon running
+
     def _spawn_daemon(self) -> None:
-        """Spawn the daemon detached. Protected by a spawn-time file lock
-        so two clients don't double-spawn."""
+        """Spawn the daemon detached. Uses port-bind check on Windows and
+        FileLock spawn lock to prevent concurrent spawn attempts."""
+        if self._daemon_port_bound():
+            return
+
         from filelock import FileLock, Timeout
+
         lock_path = runtime_dir() / "embed_daemon.spawn.lock"
         try:
-            with FileLock(str(lock_path), timeout=1.0):
-                # Re-check after acquiring lock
-                if self._daemon_alive():
+            with FileLock(str(lock_path), timeout=30.0):
+                if self._daemon_port_bound():
                     return
+
                 self._do_spawn()
+
+                # Wait for daemon to bind the port (confirms startup)
+                for _ in range(60):  # up to 30s
+                    time.sleep(0.5)
+                    if self._daemon_port_bound():
+                        return
         except Timeout:
-            # Another client is spawning; just wait briefly
-            time.sleep(1.0)
+            pass
 
     def _do_spawn(self) -> None:
         """Detached subprocess spawn — survives parent's exit."""
-        cmd = [sys.executable, "-m", "memory.embed_daemon"]
+        exe = sys.executable
+        if sys.platform == "win32" and exe.lower().endswith("python.exe"):
+            pythonw = exe[:-len("python.exe")] + "pythonw.exe"
+            if os.path.isfile(pythonw):
+                exe = pythonw
+        cmd = [exe, "-m", "memory.embed_daemon"]
         env = dict(os.environ)
         # Set PYTHONPATH so the daemon can import its own modules when
         # spawned from arbitrary cwd.
@@ -137,8 +166,9 @@ class DaemonClient:
             "close_fds": True,
         }
         if sys.platform == "win32":
-            # DETACHED_PROCESS | CREATE_NEW_PROCESS_GROUP, hidden
-            kwargs["creationflags"] = 0x00000008 | 0x00000200
+            kwargs["creationflags"] = (
+                subprocess.CREATE_NO_WINDOW | subprocess.DETACHED_PROCESS
+            )
         else:
             kwargs["start_new_session"] = True
 
