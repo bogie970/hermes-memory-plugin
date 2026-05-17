@@ -80,6 +80,7 @@ sync_glob "python/subconscious" "*.py"
 sync_glob "commands"           "*.md"
 
 sync_file "$SCRIPT_DIR/hooks/hooks.json" "$CACHE/hooks/hooks.json"
+sync_glob "hooks"              "*.cjs"
 sync_file "$SCRIPT_DIR/hermes.config.json" "$CACHE/hermes.config.json" 1
 
 echo

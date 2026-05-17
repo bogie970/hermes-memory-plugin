@@ -104,6 +104,7 @@ Sync-Glob "commands" "*.md"
 
 # Single files
 Sync-File (Join-Path $ScriptRoot "hooks\hooks.json") (Join-Path $Cache "hooks\hooks.json")
+Sync-Glob "hooks" "*.cjs"
 
 # Config: only if cache is older (don't clobber a user-installed config)
 Sync-File (Join-Path $ScriptRoot "hermes.config.json") (Join-Path $Cache "hermes.config.json") -OnlyIfNewer $true
