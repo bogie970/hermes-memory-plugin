@@ -79,6 +79,28 @@ The installer:
 4. Installs Node deps for the TS hooks
 5. Writes `hermes.config.json` with absolute paths
 
+### Cache topology (post-2026-05-17)
+
+Plugin runtime files live in **two physical caches** (no symlinks):
+
+- Windows: `%USERPROFILE%\.claude\plugins\cache\hermes-memory\hermes-memory\1.0.0\`
+- WSL: `~/.claude/plugins/cache/hermes-memory/hermes-memory/1.0.0/`
+
+Each cache is populated from the cloned source tree by `sync-cache.ps1`
+(Windows side) or `sync-cache.sh` (WSL/POSIX side). Run the appropriate
+script after any source edit; or run both if you edit while WSL agents
+are active.
+
+Earlier versions linked the WSL cache to the Windows cache via a `ln -s`
+symlink across DrvFs. That symlink was unreliable (silent decay across
+WSL restarts, sensitive to shell-quoting bugs in maintenance scripts).
+The Option A migration replaces it with dual physical install — same
+content, no symlink. Trade-off: ~10 MB disk × 2, but zero "is the link
+alive" surface area.
+
+For WSL agents that auto-launch via tmux at boot, `agents-boot.sh` calls
+`sync-cache.sh` automatically so the WSL cache stays fresh.
+
 Then register the plugin in `~/.claude/settings.json`:
 
 ```json
