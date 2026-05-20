@@ -54,3 +54,7 @@ hermes.config.json
 # Runtime data
 data/
 __pycache__/
+
+# Backup files (pre-edit snapshots, point-in-time only)
+*.pre-*-bak
+*.bak

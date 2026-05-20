@@ -61,6 +61,13 @@ def _format_xml(scored_memories: list, query_time_ms: int) -> str:
         tags_attr = ""
         if r.tags:
             tags_attr = f' tags="{_escape_xml(",".join(r.tags))}"'
+        # Surface tier+provenance per injection-audit (2026-05-19): the agent
+        # must be able to classify retrieved memories per doctrine §2 Class
+        # A/B/C/D before acting on them. Default empty if not in metadata.
+        tier = r.metadata.get("_tier", "")
+        provenance = r.metadata.get("_provenance", "")
+        tier_attr = f' tier="{_escape_xml(tier)}"' if tier else ""
+        prov_attr = f' provenance="{_escape_xml(provenance)}"' if provenance else ""
         lines.append(
             f'<memory id="{_escape_xml(r.id)}" '
             f'importance="{r.importance:.2f}" '
@@ -69,6 +76,8 @@ def _format_xml(scored_memories: list, query_time_ms: int) -> str:
             f'relevance="{sm.relevance:.2f}" '
             f'score="{sm.combined_score:.2f}" '
             f'created="{created}"'
+            f'{tier_attr}'
+            f'{prov_attr}'
             f'{tags_attr}>'
         )
         lines.append(_escape_xml(r.content))

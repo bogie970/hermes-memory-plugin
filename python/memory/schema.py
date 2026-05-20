@@ -116,6 +116,16 @@ class MemoryRecord(BaseModel):
         except (json.JSONDecodeError, TypeError):
             metadata = {}
 
+        # Surface v2 columns into metadata so retrieval consumers can read
+        # tier+provenance without needing direct LanceDB row access. Per
+        # injection-audit (2026-05-19): retrieval XML must carry these so
+        # the agent can distinguish verified/user_stated from probationary/
+        # llm_inferred at quarantine-classification time.
+        for _v2_col in ("tier", "provenance", "writer", "source_ref"):
+            _v = row.get(_v2_col)
+            if _v:
+                metadata[f"_{_v2_col}"] = _v
+
         return cls(
             id=row["id"],
             content=row["content"],

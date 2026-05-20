@@ -86,10 +86,17 @@ def _audit(store: MemoryStore, *, memory_id: str, op: str, who: str, why: str,
 
 
 def _assign_tier(writer: str, provenance: str) -> str:
-    """Tier based on writer + provenance."""
+    """Tier based on writer + provenance.
+
+    Per injection-audit (2026-05-19): unknown writers MUST NOT achieve
+    verified tier via provenance='user_stated'. Only known writers can
+    claim user_stated; unknown writers default to probationary regardless.
+    """
     if writer in CANDIDATE_ONLY_WRITERS:
         return "candidate"
-    if writer in USER_WRITERS or provenance == "user_stated":
+    if writer in USER_WRITERS:
+        return "verified"
+    if writer in KNOWN_WRITERS and provenance == "user_stated":
         return "verified"
     return "probationary"
 
@@ -151,8 +158,14 @@ def write_memory(
     if not source_ref:
         raise WriteRejected("source_ref required")
     if writer not in KNOWN_WRITERS:
-        # We allow unknown writers but they default to probationary
-        pass
+        # Unknown writers cannot claim user_stated provenance — that path
+        # would bypass _assign_tier's known-writer check and produce a
+        # verified-tier record. Reject explicitly per injection-audit.
+        if provenance == "user_stated":
+            raise WriteRejected(
+                f"unknown writer {writer!r} cannot claim provenance='user_stated'"
+            )
+        # Otherwise allow; _assign_tier will return probationary.
 
     # 1a. Scrub credentials before they hit L2 — pasted API keys / tokens
     #     would otherwise resurface via retrieval months later.

@@ -348,12 +348,23 @@ def evict(
             continue
         importance = float(chunk.get("importance", 0.5))
         topic = chunk.get("topic_tag", "unsegmented")
+        # Per injection-audit (2026-05-19): when an evicted chunk summarizes
+        # peer-originated content, preserve the peer_reported origin instead
+        # of laundering it as llm_inferred. Otherwise a peer-injected payload
+        # surfaced via retrieval looks identical to in-session reasoning.
+        chunk_provenance = "llm_inferred"
+        if any(marker in text for marker in (
+            "<incoming_message>", "<task-notification>",
+            "[from atlas]", "[from daedalus]", "[from hermes]",
+            "[from sonnet-voice]", "[from iris]",
+        )):
+            chunk_provenance = "peer_reported"
         try:
             chunk_id = write_memory(
                 store=store,
                 content=text,
                 writer="subconscious_haiku",
-                provenance="llm_inferred",
+                provenance=chunk_provenance,
                 source_ref=f"l1_evict:{block_id}:{session_id}:{i}",
                 confidence=importance,
                 tags=[topic, "l1_evict"],
