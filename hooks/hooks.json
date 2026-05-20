@@ -25,6 +25,11 @@
             "type": "command",
             "command": "python.exe \"C:/Users/jbogi/claude-nodes/hermes/aisys/memory/pretooluse_memcheck.py\"",
             "timeout": 5
+          },
+          {
+            "type": "command",
+            "command": "python.exe \"C:/Users/jbogi/claude-nodes/hermes/aisys/memory/pretooluse_citation_annotate.py\"",
+            "timeout": 5
           }
         ]
       }
@@ -55,6 +60,12 @@
             "type": "command",
             "command": "node \"${CLAUDE_PLUGIN_ROOT:-.}/hooks/silent-npx.cjs\" tsx \"${CLAUDE_PLUGIN_ROOT:-.}/scripts/l1_watch.ts\"",
             "timeout": 15,
+            "async": true
+          },
+          {
+            "type": "command",
+            "command": "python.exe \"C:/Users/jbogi/claude-nodes/hermes/aisys/memory/stop_citation_resolution.py\"",
+            "timeout": 10,
             "async": true
           }
         ]
